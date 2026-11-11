@@ -71,6 +71,7 @@ The server sends these rules to every client as MCP instructions (`agent/src/ins
 Rules:
 
 - Run `npm test` at the repository root before every commit. Tests use fake data only.
+- Commit subjects: imperative, at most 50 characters, no trailing period. Details go in the body.
 - Public repository: English only; no real IPs, hostnames, domains, ids, account names or emails. Use 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32 and example.com.
 - Every new tool follows the existing guards: `readOnlyHint` for reads, `destructiveHint` for anything that stops, deletes or runs commands; protected machines refused; destructive actions repeat the machine's name; secret-returning operations refused; secrets redacted; changes audited; a read-only `*_query` twin for each generic API tool. Add tests for the refusals.
 - New environment variables use the `ORRERY_` prefix, go into `deploy/docker-compose.yml` (containers only see listed variables) and the configuration table in `docs/architecture.md`.
