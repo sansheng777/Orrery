@@ -3,6 +3,7 @@
 // any other API call only on the admin agent.
 import fs from "node:fs";
 import path from "node:path";
+import { protectedIps, jsonRequest } from "../shared.js";
 
 export const id = "digitalocean";
 export const name = "DigitalOcean";
@@ -45,40 +46,18 @@ export function normalizePath(pathAndQuery) {
   return bare + (query ? `?${query}` : "");
 }
 
-const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
-const MAX_RETRY_WAIT_MS = 10000;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function createApi(config, fetchImpl = fetch, { retryWaitMs = 1000 } = {}) {
   async function request(method, pathAndQuery, { body } = {}) {
     if (!METHODS.includes(method)) throw new Error(`Unsupported method ${method}`);
     const p = normalizePath(pathAndQuery);
-    const headers = { authorization: `Bearer ${config.token}`, accept: "application/json" };
-    if (body !== undefined) headers["content-type"] = "application/json";
-    // GETs are retried once on rate limiting (429) or a 5xx; a change is never sent twice.
-    for (let attempt = 0; ; attempt++) {
-      const res = await fetchImpl(API + p, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
-      const text = await res.text();
-      let json = null;
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch {}
-      if (res.ok) return json ?? {};
-      const retryAfter = Number(res.headers.get("retry-after")) || 0;
-      if (method === "GET" && attempt === 0 && RETRY_STATUS.has(res.status) && retryAfter * 1000 <= MAX_RETRY_WAIT_MS) {
-        await sleep(retryAfter ? retryAfter * 1000 : retryWaitMs);
-        continue;
-      }
-      const err = new DigitalOceanError(res.status, json, method, p);
-      if (res.status === 401) err.message += " (the DigitalOcean token is invalid, expired or revoked; create a new one, see docs/providers.md, DigitalOcean)";
-      if (res.status === 429) err.message += ` (rate limited${retryAfter ? `, retry after ${retryAfter}s` : ""})`;
-      throw err;
-    }
+    // A GET is retried once on rate limiting or a 5xx; a change is never sent twice (jsonRequest).
+    const { res, json, retryAfter } = await jsonRequest(fetchImpl, API + p, { method, headers: { authorization: `Bearer ${config.token}` }, body, timeoutMs: TIMEOUT_MS, retryWaitMs });
+    if (res.ok) return json ?? {};
+    const err = new DigitalOceanError(res.status, json, method, p);
+    if (res.status === 401) err.message += " (the DigitalOcean token is invalid, expired or revoked; create a new one, see docs/providers.md, DigitalOcean)";
+    if (res.status === 429) err.message += ` (rate limited${retryAfter ? `, retry after ${retryAfter}s` : ""})`;
+    throw err;
   }
 
   // Every page of a paginated collection ({<key>: [...], links: {pages: {next, last}}, meta: {total}}).
@@ -201,10 +180,7 @@ export const redactSecrets = (v) =>
         ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, isSecretField(k, x) || (k === "key" && typeof x === "string" && x !== "" && ("api_host" in v || "namespace" in v)) ? "[redacted]" : redactSecrets(x)]))
         : v;
 
-// ORRERY_SELF_IP (the Orrery host) plus ORRERY_PROTECTED_IPS (comma list of other machines that must
-// stay up): Droplets a chat may power on but never shut down, reboot, delete, rebuild or change.
-export const protectedIps = (env = process.env) =>
-  [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((ip) => String(ip || "").trim().toLowerCase()).filter(Boolean))];
+export { protectedIps };
 
 export function assertNotProtected(d, protect) {
   const ip = [...(d.ipv4 || []), d.ipv6].find((a) => a && protect.includes(String(a).toLowerCase()));

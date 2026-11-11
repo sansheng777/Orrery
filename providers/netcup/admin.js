@@ -4,6 +4,7 @@
 // spec (https://www.servercontrolpanel.de/scp-core/api/v1/openapi), which is also checked at run time.
 import net from "node:net";
 import { API, SCP, accessToken, toServer } from "./index.js";
+import { protectedIps } from "../shared.js";
 
 // Built lazily: index.js imports this module, so its constants are not set yet at load time.
 const userinfoUrl = () => `${SCP}/realms/scp/protocol/openid-connect/userinfo`;
@@ -127,10 +128,7 @@ export async function assertServerName(scp, serverId, confirm) {
   return s;
 }
 
-// ORRERY_SELF_IP (the Orrery host) plus ORRERY_PROTECTED_IPS (comma list, such as the user's
-// proxy): machines a chat may start but never stop, restart, rescue, reinstall, revert or reconfigure.
-export const protectedIps = (env = process.env) =>
-  [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((ip) => String(ip || "").trim().toLowerCase()).filter(Boolean))];
+export { protectedIps };
 
 const NO_SELF_IP =
   "Refusing: the Orrery host is not known, so no netcup server is stopped, restarted, rescued, reinstalled, reverted or reconfigured from a chat. Set ORRERY_SELF_IP (deploy/enable-ssh.sh).";

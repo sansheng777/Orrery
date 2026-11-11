@@ -3,6 +3,7 @@
 // linode_instances for both agents; power, delete, rebuild and any other API call only on the admin agent.
 import fs from "node:fs";
 import path from "node:path";
+import { protectedIps, jsonRequest } from "../shared.js";
 
 export const id = "linode";
 export const name = "Linode";
@@ -43,41 +44,19 @@ export function normalizePath(pathAndQuery) {
   return p.replace(/\/$/, "") + (query ? `?${query}` : "");
 }
 
-const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
-const MAX_RETRY_WAIT_MS = 10000;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function createApi(config, fetchImpl = fetch, { retryWaitMs = 1000 } = {}) {
   async function request(method, pathAndQuery, { body } = {}) {
     if (!METHODS.includes(method)) throw new Error(`Unsupported method ${method}`);
     if (method === "GET") body = undefined; // a GET carries no body
     const p = normalizePath(pathAndQuery);
-    const headers = { authorization: `Bearer ${config.token}`, accept: "application/json" };
-    if (body !== undefined) headers["content-type"] = "application/json";
-    // GETs are retried once on rate limiting (429) or a 5xx; a change is never sent twice.
-    for (let attempt = 0; ; attempt++) {
-      const res = await fetchImpl(API + p, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
-      const text = await res.text();
-      let json = null;
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch {}
-      if (res.ok) return json ?? {};
-      const retryAfter = Number(res.headers.get("retry-after")) || 0;
-      if (method === "GET" && attempt === 0 && RETRY_STATUS.has(res.status) && retryAfter * 1000 <= MAX_RETRY_WAIT_MS) {
-        await sleep(retryAfter ? retryAfter * 1000 : retryWaitMs);
-        continue;
-      }
-      const err = new LinodeError(res.status, json, method, p);
-      if (res.status === 401) err.message += " (the Linode token is invalid, expired or revoked; create a new one, see docs/providers.md, Linode)";
-      if (res.status === 429) err.message += ` (rate limited${retryAfter ? `, retry after ${retryAfter}s` : ""})`;
-      throw err;
-    }
+    // A GET is retried once on rate limiting or a 5xx; a change is never sent twice (jsonRequest).
+    const { res, json, retryAfter } = await jsonRequest(fetchImpl, API + p, { method, headers: { authorization: `Bearer ${config.token}` }, body, timeoutMs: TIMEOUT_MS, retryWaitMs });
+    if (res.ok) return json ?? {};
+    const err = new LinodeError(res.status, json, method, p);
+    if (res.status === 401) err.message += " (the Linode token is invalid, expired or revoked; create a new one, see docs/providers.md, Linode)";
+    if (res.status === 429) err.message += ` (rate limited${retryAfter ? `, retry after ${retryAfter}s` : ""})`;
+    throw err;
   }
 
   // Every page of a paginated collection ({data, page, pages}).
@@ -159,10 +138,7 @@ export function guardRequest(method, p, body) {
   }
 }
 
-// ORRERY_SELF_IP (the Orrery host) plus ORRERY_PROTECTED_IPS (comma list, such as the user's
-// proxy): Linodes a chat may boot but never shut down, reboot, delete, rebuild or change.
-export const protectedIps = (env = process.env) =>
-  [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((ip) => String(ip || "").trim().toLowerCase()).filter(Boolean))];
+export { protectedIps };
 
 // An address as Linode writes it, without a /prefix (IPv6 SLAAC addresses and ranges carry one).
 const bareIp = (a) => String(a || "").split("/")[0].trim().toLowerCase();

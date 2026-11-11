@@ -169,11 +169,16 @@ for (const [method, p] of [
   ["POST", "/projects/demo-proj/regions/asia-east1/instanceGroupManagers/web-mig/abandonInstances"],
   ["POST", "/projects/demo-proj/regions/asia-east1/instanceGroupManagers/web-mig/resize?size=1"],
   ["DELETE", "/projects/demo-proj/regions/asia-east1/instanceGroupManagers/web-mig/"],
+  ["PATCH", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers/web-mig"],
+  ["PUT", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers/web-mig"],
+  ["POST", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers/web-mig/applyUpdatesToInstances"],
+  ["POST", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers/web-mig/setInstanceTemplate"],
 ]) {
   assert.throws(() => guardRequest(method, p), /managed instance group.*protected instance could be among them/, `${method} ${p}`);
 }
 assert.doesNotThrow(() => guardRequest("GET", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers/web-mig"));
 assert.doesNotThrow(() => guardRequest("POST", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers/web-mig/listManagedInstances"));
+assert.doesNotThrow(() => guardRequest("POST", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers"), "creating a group names no existing instance");
 for (const p of ["/projects/demo-proj/zones/./instances/web-1", "//projects/demo-proj", "/projects/demo-proj/zones/a%2Fb", "/projects/{p}/zones", "/compute/v1/projects/x", "/v1/projects"]) {
   assert.throws(() => guardRequest("DELETE", p), /Invalid Compute Engine API path|start with \/projects/, p);
 }

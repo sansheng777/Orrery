@@ -7,3 +7,4 @@
 !agent/src/
 !providers/*/package.json
 !providers/*/*.js
+!providers/shared.js

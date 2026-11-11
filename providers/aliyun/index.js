@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { protectedIps, sleep } from "../shared.js";
 
 export const id = "aliyun";
 export const name = "Alibaba Cloud";
@@ -28,7 +29,7 @@ const ACTION = /^[A-Z][A-Za-z0-9]{2,80}$/;
 const READ_ACTION = /^(Describe|Query|Get|List)/;
 
 // $ORRERY_DIR/aliyun.json: {"accessKeyId": "...", "accessKeySecret": "...", "regions": "all" | ["cn-beijing", ...]}.
-export function loadConfig(env = process.env, dataDir) {
+export function loadConfig(_env, dataDir) {
   const file = dataDir && path.join(dataDir, "aliyun.json");
   let data;
   try {
@@ -74,7 +75,6 @@ export function flatten(params, prefix = "", out = {}) {
 }
 
 const RETRY_STATUS = new Set([500, 502, 503, 504]);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function createApi(config, fetchImpl = fetch, { retryWaitMs = 1000, now = () => new Date(), nonce = () => crypto.randomUUID() } = {}) {
   // service: "ecs" | "bss"; region: the ECS region (endpoint and RegionId), or null.
@@ -238,14 +238,14 @@ export function instanceIdsIn(params = {}) {
 
 // What the generic tools refuse: deleting instances goes through aliyun_delete (asks for the name), and
 // the other ECS actions that erase an instance or its disks without that confirmation (scheduled release,
-// system disk replacement, disk resets) are left to the console; a domain is never transferred out or
+// system disk replacement, disk resets, reinitialisation and deletion) are left to the console; a domain is never transferred out or
 // unlocked for transfer, and its transfer code never read; answers that carry a private key, a console
 // login token or a shell session credential; billing is read-only.
 export function guardRequest(service, action) {
   if (!SERVICES[service]) throw new Error(`Unsupported Alibaba Cloud service ${service} (supported: ${Object.keys(SERVICES).join(", ")})`);
   if (SERVICES[service].readOnly && !READ_ACTION.test(action)) throw new Error(`${service} is read-only here: ${action} is refused (only Query*, Describe*, Get*, List*).`);
   if (service === "ecs" && /^DeleteInstances?$/i.test(action)) throw new Error("Deleting instances goes through aliyun_delete, which asks for the name.");
-  if (service === "ecs" && /^(ModifyInstanceAutoReleaseTime|ReplaceSystemDisk|ResetDisks?)$/i.test(action)) throw new Error(`${action} releases an instance or erases a disk without the name confirmation of aliyun_delete; do it in the Aliyun console.`);
+  if (service === "ecs" && /^(ModifyInstanceAutoReleaseTime|ReplaceSystemDisk|ResetDisks?|ReInitDisk|DeleteDisk)$/i.test(action)) throw new Error(`${action} releases an instance or erases a disk without the name confirmation of aliyun_delete; do it in the Aliyun console.`);
   if (service === "ecs" && /^(CreateKeyPair|DescribeInstanceVncUrl|StartTerminalSession)$/i.test(action)) throw new Error(`${action} returns a private key, a console login token or a shell session credential, which must not end up in the chat; do it in the Aliyun console.`);
   if (service === "domain" && /TransferOut|TransferProhibition|AuthorizationCode/i.test(action)) throw new Error(`${action} would let the domain leave this account or reveals its transfer code; do it in the Aliyun console.`);
   if (service === "cas" && /^(GetUserCertificateDetail|DescribeCertificatePrivateKey|DescribeDownloadCertificate)/i.test(action)) throw new Error(`${action} returns a certificate's private key, which must not end up in the chat; download it in the Aliyun console.`);
@@ -262,10 +262,7 @@ export const redactSecrets = (v) => {
   return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, (AUTH_KEY.test(k) || (signingArg && k === "ArgValue")) && x != null && x !== "" ? "[redacted]" : redactSecrets(x)]));
 };
 
-// ORRERY_SELF_IP plus ORRERY_PROTECTED_IPS: instances a chat may start but never stop, reboot,
-// delete or change.
-export const protectedIps = (env = process.env) =>
-  [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((ip) => String(ip || "").trim().toLowerCase()).filter(Boolean))];
+export { protectedIps };
 
 export async function getInstances(api, region, ids) {
   const r = await api.request("ecs", region, "DescribeInstances", { InstanceIds: JSON.stringify(ids), PageSize: 100 });

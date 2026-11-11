@@ -4,6 +4,7 @@
 // API call only on the admin agent.
 import fs from "node:fs";
 import path from "node:path";
+import { protectedIps, jsonRequest } from "../shared.js";
 
 export const id = "vultr";
 export const name = "Vultr";
@@ -39,13 +40,10 @@ export class VultrError extends Error {
 export function normalizePath(pathAndQuery) {
   const [p, query] = String(pathAndQuery).split(/\?(.*)/s);
   if (!/^(\/[\w\-.:,]+)+\/?$/.test(p) || p.split("/").some((seg) => seg === "." || seg === "..")) throw new Error(`Invalid Vultr API path: ${pathAndQuery}`);
-  if (query !== undefined && !/^[\w\-.,:=&+]*$/.test(query)) throw new Error(`Invalid Vultr API query: ${pathAndQuery}`);
+  if (query !== undefined && !/^[\w\-.,:=&+/]*$/.test(query)) throw new Error(`Invalid Vultr API query: ${pathAndQuery}`);
   return p.replace(/\/$/, "") + (query ? `?${query}` : "");
 }
 
-const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
-const MAX_RETRY_WAIT_MS = 10000;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function createApi(config, fetchImpl = fetch, { retryWaitMs = 1000 } = {}) {
   // query: extra parameters encoded here, after the path check (a pagination cursor is base64 and may end in
@@ -54,32 +52,13 @@ export function createApi(config, fetchImpl = fetch, { retryWaitMs = 1000 } = {}
     if (!METHODS.includes(method)) throw new Error(`Unsupported method ${method}`);
     let p = normalizePath(pathAndQuery);
     if (query) p += (p.includes("?") ? "&" : "?") + new URLSearchParams(query).toString();
-    const headers = { authorization: `Bearer ${config.apiKey}`, accept: "application/json" };
-    if (body !== undefined) headers["content-type"] = "application/json";
-    // GETs are retried once on rate limiting (429) or a 5xx; a change is never sent twice.
-    for (let attempt = 0; ; attempt++) {
-      const res = await fetchImpl(API + p, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
-      const text = await res.text();
-      let json = null;
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch {}
-      if (res.ok) return json ?? {};
-      const retryAfter = Number(res.headers.get("retry-after")) || 0;
-      if (method === "GET" && attempt === 0 && RETRY_STATUS.has(res.status) && retryAfter * 1000 <= MAX_RETRY_WAIT_MS) {
-        await sleep(retryAfter ? retryAfter * 1000 : retryWaitMs);
-        continue;
-      }
-      const err = new VultrError(res.status, json, method, p);
-      if (res.status === 401) err.message += " (the API key is wrong or disabled, or this IP is not in the key's access control list; see docs/providers.md, Vultr)";
-      if (res.status === 429) err.message += ` (rate limited${retryAfter ? `, retry after ${retryAfter}s` : ""})`;
-      throw err;
-    }
+    // A GET is retried once on rate limiting or a 5xx; a change is never sent twice (jsonRequest).
+    const { res, json, retryAfter } = await jsonRequest(fetchImpl, API + p, { method, headers: { authorization: `Bearer ${config.apiKey}` }, body, timeoutMs: TIMEOUT_MS, retryWaitMs });
+    if (res.ok) return json ?? {};
+    const err = new VultrError(res.status, json, method, p);
+    if (res.status === 401) err.message += " (the API key is wrong or disabled, or this IP is not in the key's access control list; see docs/providers.md, Vultr)";
+    if (res.status === 429) err.message += ` (rate limited${retryAfter ? `, retry after ${retryAfter}s` : ""})`;
+    throw err;
   }
 
   // Every page of a cursor-paginated collection ({<key>: [...], meta: {links: {next}}}).
@@ -174,9 +153,11 @@ export function guardRequest(method, p, body) {
   const bare = normalizePath(p).split("?")[0];
   if (method === "DELETE" && /^\/instances\/[^/]+$/.test(bare)) throw new Error("Deleting an instance goes through vultr_delete, which asks for its label.");
   if (method === "POST" && /^\/instances\/[^/]+\/reinstall$/.test(bare)) throw new Error("Reinstalling an instance goes through vultr_reinstall, which asks for its label.");
-  if (method === "PATCH" && /^\/instances\/[^/]+$/.test(bare) && body && ["os_id", "app_id", "image_id"].some((k) => body[k] != null && body[k] !== "")) {
+  const reimage = method === "PATCH" && body && ["os_id", "app_id", "image_id"].some((k) => body[k] != null && body[k] !== "");
+  if (reimage && /^\/instances\/[^/]+$/.test(bare)) {
     throw new Error("Changing an instance's os_id, app_id or image_id reinstalls it and erases its disk; use vultr_reinstall (osId, appId or imageId), which asks for its label.");
   }
+  if (reimage && /^\/bare-metals\/[^/]+$/.test(bare)) throw new Error("Changing a bare-metal server's os_id, app_id or image_id reinstalls and erases it; do it in the Vultr website.");
   if (method === "POST" && /^\/(instances|bare-metals)\/[^/]+\/restore$/.test(bare)) throw new Error("Restoring a snapshot or backup overwrites the server's disk; do it in the Vultr website.");
   if ((method === "DELETE" && /^\/bare-metals\/[^/]+$/.test(bare)) || (method === "POST" && /^\/bare-metals\/[^/]+\/reinstall$/.test(bare))) {
     throw new Error("Deleting or reinstalling a bare-metal server erases it; do it in the Vultr website.");
@@ -186,10 +167,7 @@ export function guardRequest(method, p, body) {
   }
 }
 
-// ORRERY_SELF_IP (the Orrery host) plus ORRERY_PROTECTED_IPS (comma list of other machines that must
-// stay up): instances a chat may start but never halt, reboot, delete, reinstall or change.
-export const protectedIps = (env = process.env) =>
-  [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((a) => String(a || "").trim().toLowerCase()).filter(Boolean))];
+export { protectedIps };
 
 export function assertNotProtected(i, protect) {
   const hit = [i.ipv4, i.ipv6].find((a) => a && protect.includes(String(a).toLowerCase()));

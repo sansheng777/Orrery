@@ -10,6 +10,7 @@ import * as lightsail from "@aws-sdk/client-lightsail";
 import { EC2InstanceConnectClient, SendSSHPublicKeyCommand } from "@aws-sdk/client-ec2-instance-connect";
 import { CloudWatchClient, GetMetricDataCommand } from "@aws-sdk/client-cloudwatch";
 import { CostExplorerClient, GetCostAndUsageCommand } from "@aws-sdk/client-cost-explorer";
+import { protectedIps } from "../shared.js";
 
 export const id = "aws";
 export const name = "AWS";
@@ -51,7 +52,7 @@ const clientCache = new Map();
 function client(config, Kind, region) {
   if (config.sdk) return new Kind({ region, credentials: config.credentials, maxAttempts: 1, ...config.sdk });
   const key = `${Kind.name}|${region}|${config.credentials.accessKeyId}`;
-  if (!clientCache.has(key)) clientCache.set(key, new Kind({ region, credentials: config.credentials, maxAttempts: 2 }));
+  if (!clientCache.has(key)) clientCache.set(key, new Kind({ region, credentials: config.credentials, maxAttempts: 2, requestHandler: { connectionTimeout: 10000, requestTimeout: 30000 } }));
   return clientCache.get(key);
 }
 
@@ -146,7 +147,7 @@ async function cpuByInstance(config, region, ids) {
 
 // ---------- regions ----------
 const REGIONS_TTL_MS = 3600 * 1000;
-const regionCache = new Map(); // accessKeyId -> { at, promise }
+const regionCache = new Map(); // access key | regions | lightsail -> { at, promise }
 
 // EC2 regions enabled for the account (or the configured ones), and the subset where Lightsail exists.
 export async function resolveRegions(config) {
@@ -297,10 +298,7 @@ export const redactSecrets = (v) =>
       ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, SECRET_FIELDS.test(k) && x != null && x !== "" ? "[redacted]" : redactSecrets(x)]))
       : v;
 
-// ORRERY_SELF_IP (the Orrery host) plus ORRERY_PROTECTED_IPS (comma list, such as the user's
-// proxy): instances a chat may start but never stop, reboot, terminate, delete or change.
-export const protectedIps = (env = process.env) =>
-  [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((ip) => String(ip || "").trim().toLowerCase()).filter(Boolean))];
+export { protectedIps };
 
 const protectedIp = (config, ips) => list(ips).map((ip) => String(ip || "").toLowerCase()).find((ip) => ip && (config.protectedIps || []).includes(ip)) || null;
 const refuseProtected = (what, ip) =>

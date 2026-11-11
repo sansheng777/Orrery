@@ -111,6 +111,9 @@ assert.throws(() => guardRequest("POST", `/instances/${A}/restore`), /overwrites
 assert.throws(() => guardRequest("POST", "/bare-metals/bm1/restore"), /overwrites/);
 assert.throws(() => guardRequest("DELETE", "/bare-metals/bm1"), /bare-metal server erases it/);
 assert.throws(() => guardRequest("POST", "/bare-metals/bm1/reinstall"), /bare-metal server erases it/);
+assert.throws(() => guardRequest("PATCH", "/bare-metals/bm1", { os_id: 2136 }), /reinstalls and erases it/);
+assert.doesNotThrow(() => guardRequest("PATCH", "/bare-metals/bm1", { label: "db" }));
+assert.equal(normalizePath("/instances?per_page=5&cursor=bmV4dF9f/OA=="), "/instances?per_page=5&cursor=bmV4dF9f/OA==", "a base64 cursor may hold / + =");
 for (const [method, p] of [["POST", "/users/u1/apikeys"], ["POST", "/object-storage/o1/regenerate-keys"], ["GET", "/kubernetes/clusters/k1/config"], ["POST", "/inference/inf1/apikey"]]) {
   assert.throws(() => guardRequest(method, p), /must not end up in the chat/, `${method} ${p}`);
 }

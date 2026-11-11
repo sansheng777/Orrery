@@ -1432,12 +1432,7 @@ cat data/token</pre></li>
         else $("pane").innerHTML = `<div id="termNotice"></div><div class="notice"><p>This agent runs read-only (ORRERY_ALLOW_EXEC=0), so the terminal and container start/stop are turned off. To use them, set it to 1 and restart the agent.</p></div>`;
       }
     }
-    // Live figures re-render every second: the header and pane are rewritten only when their HTML changed,
-    // so text in them (logs, addresses) can be selected. The cache lives on the element, so a remount
-    // (new elements above) starts empty.
-    const head = $("head");
-    const headNow = headHtml(s, st, d);
-    if (head.__html !== headNow) { head.innerHTML = headNow; head.__html = headNow; }
+    patchHtml($("head"), headHtml(s, st, d));
     if (headOnly) return;
     const containers = d?.docker?.containers?.length ?? 0;
     $("tabs").innerHTML = `
@@ -1452,14 +1447,26 @@ cat data/token</pre></li>
       : (d ? dockerPane(d) : st.error ? "" : `<div class="empty">Loading containers…</div>`);
     // Stats of any server re-render the pane: the open log keeps its scroll position.
     const pane = $("pane");
-    const paneNow = notice + body;
-    if (pane.__html === paneNow) return;
     const log = pane.querySelector(".logs pre");
     const kept = log && { container: log.dataset.log, top: log.scrollTop };
-    pane.innerHTML = paneNow;
-    pane.__html = paneNow;
+    patchHtml(pane, notice + body);
     const again = kept && pane.querySelector(".logs pre");
     if (again && again.dataset.log === kept.container) again.scrollTop = kept.top;
+  }
+
+  // Live figures re-render every second. Writes html into el one top-level child at a time and leaves
+  // a child alone when its HTML did not change, so text selected there (logs, system details, addresses)
+  // stays selected. The cache lives on the elements, so a remount starts empty.
+  function patchHtml(el, html) {
+    if (el.__html === html) return;
+    el.__html = html;
+    const t = document.createElement("template");
+    t.innerHTML = html;
+    const next = [...t.content.children];
+    for (const n of next) n.__src = n.outerHTML;
+    const cur = [...el.children];
+    if (cur.length !== next.length || cur.some((c) => c.__src === undefined)) return el.replaceChildren(...next);
+    next.forEach((n, i) => { if (cur[i].__src !== n.__src) cur[i].replaceWith(n); });
   }
 
   function headHtml(s, st, d) {

@@ -7,6 +7,7 @@
 // with command ids whose progress GET /service/queue?id=<id> reports.
 import fs from "node:fs";
 import path from "node:path";
+import { protectedIps, sleep } from "../shared.js";
 
 export const id = "kamatera";
 export const name = "Kamatera";
@@ -48,7 +49,6 @@ export function normalizePath(pathAndQuery) {
 }
 
 const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function createApi(config, fetchImpl = fetch, { retryWaitMs = 1000 } = {}) {
   async function request(method, pathAndQuery, { body } = {}) {
@@ -177,10 +177,7 @@ export function guardRequest(method, p, body) {
   return { serverId: String(body.id), powerOn: bare === "/service/server/poweron" || bare === "/service/server/resume" };
 }
 
-// ORRERY_SELF_IP (the Orrery host) plus ORRERY_PROTECTED_IPS (comma list of other machines that must
-// stay up): servers a chat may start but never stop, reboot, delete or change.
-export const protectedIps = (env = process.env) =>
-  [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((a) => String(a || "").trim().toLowerCase()).filter(Boolean))];
+export { protectedIps };
 
 export function assertNotProtected(s, protect) {
   const hit = s.publicIps.find((a) => protect.includes(String(a).toLowerCase()));

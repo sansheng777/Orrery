@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { protectedIps, sleep } from "../shared.js";
 
 export const id = "gcp";
 export const name = "Google Cloud";
@@ -72,7 +73,6 @@ export function normalizePath(pathAndQuery) {
 }
 
 const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function createApi(config, fetchImpl = fetch, { retryWaitMs = 1000, now = () => Date.now() } = {}) {
   let token = null; // { value, expiresAt }
@@ -193,16 +193,13 @@ export function guardRequest(method, p) {
   const bare = normalizePath(p).split("?")[0];
   if (method === "DELETE" && /^\/projects\/[^/]+\/zones\/[^/]+\/instances\/[^/]+$/.test(bare)) throw new Error("Deleting an instance goes through gcp_delete, which asks for its name.");
   if (method === "DELETE" && /^\/projects\/[^/]+\/(zones|regions)\/[^/]+\/disks\/[^/]+$/.test(bare)) throw new Error("Deleting a disk erases its data; do it in the Google Cloud console.");
-  const mig = bare.match(/^\/projects\/[^/]+\/(?:zones|regions)\/[^/]+\/instanceGroupManagers\/[^/]+(\/(?:deleteInstances|recreateInstances|abandonInstances|resize))?$/i);
-  if (mig && (mig[1] ? method === "POST" : method === "DELETE")) {
-    throw new Error(`${method} ${bare} deletes, recreates, detaches or resizes away instances of a managed instance group (or deletes the group) without naming them, so a protected instance could be among them; do it in the Google Cloud console.`);
+  const mig = bare.match(/^\/projects\/[^/]+\/(?:zones|regions)\/[^/]+\/instanceGroupManagers\/[^/]+(?:\/([^/]+))?$/i);
+  if (mig && method !== "GET" && !/^list/i.test(mig[1] || "")) {
+    throw new Error(`${method} ${bare} changes a managed instance group, which deletes, recreates or resizes away its instances without naming them, so a protected instance could be among them; do it in the Google Cloud console.`);
   }
 }
 
-// ORRERY_SELF_IP plus ORRERY_PROTECTED_IPS: instances a chat may start but never stop, reset,
-// delete or change.
-export const protectedIps = (env = process.env) =>
-  [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((ip) => String(ip || "").trim().toLowerCase()).filter(Boolean))];
+export { protectedIps };
 
 export function assertNotProtected(i, protect) {
   const ip = [i.externalIp, i.ipv6].find((a) => a && protect.includes(String(a).toLowerCase()));

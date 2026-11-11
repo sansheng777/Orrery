@@ -16,6 +16,13 @@ import * as digitalocean from "../../providers/digitalocean/index.js";
 import * as kamatera from "../../providers/kamatera/index.js";
 
 const TTL_MS = 60 * 1000;
+const PROVIDER_TIMEOUT_MS = 90 * 1000; // one provider's whole listing (every region, every server)
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  const limit = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(message)), ms)));
+  return Promise.race([promise, limit]).finally(() => clearTimeout(timer));
+}
 
 // Lightsail blueprint -> default login user.
 const LIGHTSAIL_USERS = [
@@ -185,7 +192,7 @@ export function applyLabel(s, labels = {}) {
 // The Orrery host first, so it is always the first thing you see.
 const selfFirst = (a, b) => Number(!!b.self) - Number(!!a.self);
 
-export function createDiscovery({ env = process.env, dataDir = DATA_DIR, providers = { aws, netcup, linode, gcp, aliyun, vultr, digitalocean, kamatera }, now = () => Date.now() } = {}) {
+export function createDiscovery({ env = process.env, dataDir = DATA_DIR, providers = { aws, netcup, linode, gcp, aliyun, vultr, digitalocean, kamatera }, now = () => Date.now(), providerTimeoutMs = PROVIDER_TIMEOUT_MS } = {}) {
   const overridesFile = path.join(dataDir, "discovered.json");
   const labelsFile = path.join(dataDir, "labels.json");
   const selfIp = String(env.ORRERY_SELF_IP || "").trim().toLowerCase() || null;
@@ -259,53 +266,33 @@ export function createDiscovery({ env = process.env, dataDir = DATA_DIR, provide
         errors.push({ provider: "netcup", server: id, error: s.error, ...(last ? { usingListFrom: new Date(last.at).toISOString() } : {}) });
         return last ? last.server : null;
       });
+    // [provider, list its machines as server records]. Each uses the client its module builds from the config.
+    const P = providers;
     const sources = [
-      ["aws", providers.aws.loadConfig(env, dataDir), async (c) => (await providers.aws.instances(c)).instances.map((i) => fromAws(i, selfIp))],
-      ["netcup", providers.netcup.loadConfig(env, dataDir), netcupServers],
-      [
-        "linode",
-        providers.linode ? providers.linode.loadConfig(env, dataDir) : { configured: false },
-        async (c) => (await providers.linode.instances(providers.linode.createApi(c))).instances.map((l) => fromLinode(l, selfIp)),
-      ],
-      [
-        "gcp",
-        providers.gcp ? providers.gcp.loadConfig(env, dataDir) : { configured: false },
-        async (c) => (await providers.gcp.instances(gcpApi(c), c)).instances.map((i) => fromGcp(i, selfIp)),
-      ],
-      [
-        "aliyun",
-        providers.aliyun ? providers.aliyun.loadConfig(env, dataDir) : { configured: false },
-        async (c) => (await providers.aliyun.instances(providers.aliyun.createApi(c), c)).instances.map((i) => fromAliyun(i, selfIp)),
-      ],
-      [
-        "vultr",
-        providers.vultr ? providers.vultr.loadConfig(env, dataDir) : { configured: false },
-        async (c) => (await providers.vultr.instances(providers.vultr.createApi(c))).instances.map((i) => fromVultr(i, selfIp)),
-      ],
-      [
-        "digitalocean",
-        providers.digitalocean ? providers.digitalocean.loadConfig(env, dataDir) : { configured: false },
-        async (c) => (await providers.digitalocean.droplets(providers.digitalocean.createApi(c))).droplets.map((d) => fromDigitalocean(d, selfIp)),
-      ],
-      [
-        "kamatera",
-        providers.kamatera ? providers.kamatera.loadConfig(env, dataDir) : { configured: false },
-        async (c) => (await providers.kamatera.servers(providers.kamatera.createApi(c))).servers.map((k) => fromKamatera(k, selfIp)),
-      ],
-    ];
+      ["aws", async (c) => (await P.aws.instances(c)).instances.map((i) => fromAws(i, selfIp))],
+      ["netcup", netcupServers],
+      ["linode", async (c) => (await P.linode.instances(P.linode.createApi(c))).instances.map((l) => fromLinode(l, selfIp))],
+      ["gcp", async (c) => (await P.gcp.instances(gcpApi(c), c)).instances.map((i) => fromGcp(i, selfIp))],
+      ["aliyun", async (c) => (await P.aliyun.instances(P.aliyun.createApi(c), c)).instances.map((i) => fromAliyun(i, selfIp))],
+      ["vultr", async (c) => (await P.vultr.instances(P.vultr.createApi(c))).instances.map((i) => fromVultr(i, selfIp))],
+      ["digitalocean", async (c) => (await P.digitalocean.droplets(P.digitalocean.createApi(c))).droplets.map((d) => fromDigitalocean(d, selfIp))],
+      ["kamatera", async (c) => (await P.kamatera.servers(P.kamatera.createApi(c))).servers.map((k) => fromKamatera(k, selfIp))],
+    ]
+      .filter(([provider]) => P[provider])
+      .map(([provider, load]) => [provider, P[provider].loadConfig(env, dataDir), load])
+      .filter(([, config]) => config.configured);
+    // A provider that fails or does not answer in time keeps its last list; the others are not held up.
     const lists = await Promise.all(
-      sources
-        .filter(([, config]) => config.configured)
-        .map(([provider, config, load]) =>
-          load(config).then(
-            (servers) => (lastGood.set(provider, { at: now(), servers }), servers),
-            (e) => {
-              const last = lastGood.get(provider);
-              errors.push({ provider, error: e.message, ...(last ? { usingListFrom: new Date(last.at).toISOString() } : {}) });
-              return last ? last.servers : [];
-            },
-          ),
+      sources.map(([provider, config, load]) =>
+        withTimeout(load(config), providerTimeoutMs, `${provider} did not answer within ${providerTimeoutMs / 1000} s`).then(
+          (servers) => (lastGood.set(provider, { at: now(), servers }), servers),
+          (e) => {
+            const last = lastGood.get(provider);
+            errors.push({ provider, error: e.message, ...(last ? { usingListFrom: new Date(last.at).toISOString() } : {}) });
+            return last ? last.servers : [];
+          },
         ),
+      ),
     );
     return { found: lists.flat().filter(Boolean), errors };
   }

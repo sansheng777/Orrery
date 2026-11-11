@@ -168,6 +168,16 @@ assert.ok(servers.some((s) => s.source === "netcup"), "one provider failing does
   assert.deepEqual(errors, [{ provider: "netcup", error: "invalid_grant", usingListFrom: new Date(0).toISOString() }]);
 }
 
+// A provider whose API hangs does not hold the listing up: the others are listed, and it is reported.
+{
+  const hung = { loadConfig: () => ({ configured: true }), instances: () => new Promise(() => {}), createApi: () => ({}) };
+  const d = createDiscovery({ env: { ORRERY_SELF_IP: "198.51.100.10" }, dataDir, providers: { ...providers, linode: hung }, now: () => t, providerTimeoutMs: 30 });
+  const r = await d.list();
+  assert.ok(r.servers.some((s) => s.id === "netcup:400001"), "the other providers are listed");
+  assert.ok(!r.servers.some((s) => s.source === "linode"));
+  assert.match(r.errors.find((e) => e.provider === "linode").error, /did not answer within/);
+}
+
 // One netcup server's details failing (no IPs then) keeps that server's last record, and says so.
 {
   let failing = false;

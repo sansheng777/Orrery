@@ -21,6 +21,7 @@ COPY providers/digitalocean/package.json providers/digitalocean/
 COPY providers/kamatera/package.json providers/kamatera/
 RUN npm ci --omit=dev --no-audit --no-fund
 COPY agent/src agent/src
+COPY providers/shared.js providers/
 COPY providers/aws/*.js providers/aws/
 COPY providers/netcup/*.js providers/netcup/
 COPY providers/linode/*.js providers/linode/
