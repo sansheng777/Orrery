@@ -105,6 +105,10 @@ assert.equal(big.truncated, true);
 Client.reply = () => ({ chunks: [Buffer.from("partial")], code: undefined });
 await assert.rejects(exec(srv, "long"), /closed before the command finished/);
 
+// A command that outlives its timeout on a server that never confirms the close still returns (timedOut).
+Client.reply = () => ({ chunks: [Buffer.from("so far")], hang: true });
+assert.deepEqual(await exec(srv, "hang", { timeoutSec: 0.03, closeGraceMs: 20 }).then((r) => [r.stdout, r.timedOut, r.code]), ["so far", true, null]);
+
 // runInDir with a real bash behind the fake connection: the working directory and what happens when it is gone.
 {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "orrery-cwd-"));

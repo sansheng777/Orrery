@@ -99,7 +99,6 @@ await discovery.list();
 assert.equal(calls, 2, "and refreshed after a minute");
 
 const saved = addServer({ name: "agent-box", host: "192.0.2.72", port: 2222, username: "deploy" });
-discovery.invalidate();
 ({ servers } = await discovery.list());
 assert.ok(!servers.some((s) => s.id === "netcup:400003"), "a saved server with the same IP replaces the discovered one");
 assert.ok(servers.some((s) => s.id === saved.id && s.port === 2222));

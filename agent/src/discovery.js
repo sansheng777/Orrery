@@ -196,9 +196,10 @@ export function createDiscovery({ env = process.env, dataDir = DATA_DIR, provide
   const overridesFile = path.join(dataDir, "discovered.json");
   const labelsFile = path.join(dataDir, "labels.json");
   const selfIp = String(env.ORRERY_SELF_IP || "").trim().toLowerCase() || null;
+  // Only the providers' listings are cached; saved servers, labels and what onboarding learned are read
+  // from their files on every call, so a change to those shows at once.
   let cache = null; // { at, value } of the last finished listing
-  let pending = null; // { gen, promise } of the listing being fetched
-  let gen = 0; // bumped by every invalidation, so a fetch started before one is not kept
+  let pending = null; // the listing being fetched
 
   function readOverrides() {
     try {
@@ -298,23 +299,10 @@ export function createDiscovery({ env = process.env, dataDir = DATA_DIR, provide
   }
 
   function refresh() {
-    if (pending?.gen === gen) return pending.promise;
-    const mine = gen;
-    const promise = fetchProviders().then((value) => {
-      if (mine === gen) cache = { at: now(), value };
-      if (pending?.promise === promise) pending = null;
-      return value;
-    }, (e) => {
-      if (pending?.promise === promise) pending = null;
-      throw e;
-    });
-    pending = { gen: mine, promise };
-    return promise;
-  }
-  function invalidate() {
-    gen++;
-    cache = null;
-    pending = null;
+    pending ||= fetchProviders()
+      .then((value) => ((cache = { at: now(), value }), value))
+      .finally(() => (pending = null));
+    return pending;
   }
   // Past the 60 s TTL, list() waits for a fresh listing. With `stale`, resolve() answers from the last one at
   // once and refreshes behind it: the live figures call it every second, and a fresh listing (every AWS
@@ -360,7 +348,7 @@ export function createDiscovery({ env = process.env, dataDir = DATA_DIR, provide
     return applyLabel(s, readLabels());
   }
 
-  return { list, resolve, remember, setLabel, invalidate, selfIp };
+  return { list, resolve, remember, setLabel, selfIp };
 }
 
 const pick = (o = {}) => Object.fromEntries(Object.entries(o).filter(([k]) => ["username", "port", "keyPath", "bootstrappedAt"].includes(k)));

@@ -15,13 +15,13 @@ export const name = "Alibaba Cloud";
 
 // regional: the endpoint and RegionId follow the region; the others have one endpoint for the account.
 export const SERVICES = {
-  ecs: { version: "2014-05-26", regional: true, host: (region) => (region ? `ecs.${region}.aliyuncs.com` : "ecs.aliyuncs.com"), what: "ECS (instances, disks, snapshots, images, security groups, Cloud Assistant)" },
-  vpc: { version: "2016-04-28", regional: true, host: (region) => (region ? `vpc.${region}.aliyuncs.com` : "vpc.aliyuncs.com"), what: "VPC (networks, vSwitches, elastic IPs)" },
-  alidns: { version: "2015-01-09", host: () => "alidns.aliyuncs.com", what: "Alibaba Cloud DNS (domain records)" },
-  domain: { version: "2018-01-29", host: () => "domain.aliyuncs.com", what: "Domains (registration, renewal, details, name servers)" },
-  cdn: { version: "2018-05-10", host: () => "cdn.aliyuncs.com", what: "CDN (domains, configuration, certificates, refresh and prefetch, usage)" },
-  cas: { version: "2020-04-07", host: () => "cas.aliyuncs.com", what: "Certificate Management Service (SSL certificates)" },
-  bss: { version: "2017-12-14", host: () => "business.aliyuncs.com", readOnly: true, what: "Billing (balance, bills), read-only" },
+  ecs: { version: "2014-05-26", regional: true, host: (region) => (region ? `ecs.${region}.aliyuncs.com` : "ecs.aliyuncs.com"), what: "instances, disks, snapshots, images, security groups, Cloud Assistant" },
+  vpc: { version: "2016-04-28", regional: true, host: (region) => (region ? `vpc.${region}.aliyuncs.com` : "vpc.aliyuncs.com"), what: "networks, vSwitches, elastic IPs" },
+  alidns: { version: "2015-01-09", host: () => "alidns.aliyuncs.com", what: "DNS records" },
+  domain: { version: "2018-01-29", host: () => "domain.aliyuncs.com", what: "domain registration, renewal, details, name servers" },
+  cdn: { version: "2018-05-10", host: () => "cdn.aliyuncs.com", what: "CDN domains, configuration, certificates, refresh and prefetch, usage" },
+  cas: { version: "2020-04-07", host: () => "cas.aliyuncs.com", what: "SSL certificates" },
+  bss: { version: "2017-12-14", host: () => "business.aliyuncs.com", readOnly: true, what: "balance and bills, read-only" },
 };
 const TIMEOUT_MS = 30000;
 const REGION = /^[a-z]{2,3}(-[a-z0-9]+)+$/;
@@ -321,7 +321,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
     description: "ECS instances in every region: status, type, CPU and memory, OS, public and private IP, outbound bandwidth, charge type (PrePaid / PostPaid) and expiry, tags. Each carries the matching Orrery server (by public IP), if any.",
     annotations: READ,
   }, tool(() => instances(api, config, { matchHosts })));
-  const serviceList = Object.entries(SERVICES).map(([k, v]) => `${k} (${v.what})`).join("; ");
+  const serviceList = Object.entries(SERVICES).map(([k, v]) => `${k}: ${v.what}`).join("; ");
   add("aliyun_query", {
     title: "Any read-only Alibaba Cloud API call",
     description: `Call a read action (Describe*, Query*, Get*, List*) of a supported service and return the answer. Services: ${serviceList}. region is the region id for ecs and vpc, null for the others. Examples: alidns DescribeDomains / DescribeDomainRecords (DomainName); domain QueryDomainList (PageNum, PageSize) / QueryDomainByDomainName; cdn DescribeUserDomains / DescribeDomainBpsData / DescribeCdnDomainDetail; cas ListUserCertificateOrder; bss QueryInstanceBill / QueryAccountBill; vpc DescribeEipAddresses. Answers with private keys, console tokens, shell session credentials or a domain's transfer code are refused; CDN URL-signing keys (auth_key*) and private keys in answers are redacted.`,
@@ -395,7 +395,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   }));
   add("aliyun_call", {
     title: "Call any Alibaba Cloud API action (ECS, VPC, DNS, domains, CDN, certificates)",
-    description: `Call any action of a supported service, changes included. Services: ${serviceList}. region is the region id for ecs and vpc, null for the others. Examples: ecs RunInstances, ModifyInstanceSpec, AuthorizeSecurityGroup, CreateSnapshot, RunCommand; alidns AddDomainRecord (DomainName, RR, Type, Value), UpdateDomainRecord (RecordId, ...), DeleteDomainRecord; domain SaveSingleTaskForCreatingOrderRenew (renew, charges the account); cdn AddCdnDomain (DomainName, CdnType web, Sources JSON), SetCdnDomainSSLCertificate, RefreshObjectCaches (ObjectPath), BatchSetCdnDomainConfig; cas UploadUserCertificate. Use aliyun_query for reads. params are the action's parameters; lists may be given as arrays ({"InstanceId": ["i-1"]}). Refused: deleting ECS instances (aliyun_delete); scheduled release (ModifyInstanceAutoReleaseTime), ReplaceSystemDisk and ResetDisk(s), which erase without that confirmation (use the console); billing changes (bss is read-only); domain transfer-out, unlocking or transfer codes; private keys, console tokens and terminal sessions; and changes to an instance with a protected IP or to its elastic IP (the instance must be found in the region the call goes to). CDN URL-signing keys and private keys in answers are redacted.`,
+    description: `Call any action of a supported service, changes included (services and region as in aliyun_query; use that for reads). Examples: ecs RunInstances, ModifyInstanceSpec, AuthorizeSecurityGroup, CreateSnapshot, RunCommand; alidns AddDomainRecord (DomainName, RR, Type, Value), UpdateDomainRecord (RecordId, ...), DeleteDomainRecord; domain SaveSingleTaskForCreatingOrderRenew (renew, charges the account); cdn AddCdnDomain (DomainName, CdnType web, Sources JSON), SetCdnDomainSSLCertificate, RefreshObjectCaches (ObjectPath), BatchSetCdnDomainConfig; cas UploadUserCertificate. params are the action's parameters; lists may be given as arrays ({"InstanceId": ["i-1"]}). Refused: deleting ECS instances (use aliyun_delete); actions that release an instance or erase a disk without that confirmation (ModifyInstanceAutoReleaseTime, ReplaceSystemDisk, ResetDisk(s), ReInitDisk, DeleteDisk: use the console); billing changes (bss is read-only); domain transfer-out, unlocking or transfer codes; private keys, console tokens and terminal sessions; and changes to an instance with a protected IP or to its elastic IP (the instance must be found in the region the call goes to). CDN URL-signing keys and private keys in answers are redacted.`,
     inputSchema: {
       service: z.enum(Object.keys(SERVICES)),
       region: z.string().nullable().optional(),

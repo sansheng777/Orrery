@@ -95,7 +95,7 @@ Kind: R read-only, W changes something without deleting data, D can delete data,
 | `update_server` | W | Change a saved server |
 | `remove_server` | D | Remove a saved server from the list. Does not touch the machine |
 
-Container names must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`. Docker commands fall back to `sudo -n docker`. A refused SSH channel (for example sshd's `MaxSessions`) fails that call only; the shared connection stays.
+Container names must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`. Docker commands fall back to `sudo -n docker`. A refused SSH channel (sshd's `MaxSessions`, 10 by default) fails that call only, with a message that says so; the shared connection stays. A connection with a command still running is not closed as idle.
 
 ### Onboarding and overview
 
@@ -139,7 +139,7 @@ Ids: `netcup:<server id>`, `ec2:<region>:<instance id>`, `lightsail:<region>:<na
 
 - The Orrery host (the machine with `ORRERY_SELF_IP`) is listed first and tagged `orrery-host`, at any provider. A saved server with that IP, or one that overrides the discovered host, is tagged too.
 - A saved server with the same IP as a discovered one wins. Use that to change the user, port or key.
-- When a provider's API fails, its machines from the last good answer stay listed, and `discoveryErrors` reports the error with `usingListFrom`. netcup reads each server's details in a separate call; a failed call keeps that server's last record. These fallbacks are in memory only.
+- When a provider's API fails, or does not answer within 90 seconds, its machines from the last good answer stay listed and the other providers are not held up, and `discoveryErrors` reports the error with `usingListFrom`. netcup reads each server's details in a separate call; a failed call keeps that server's last record. These fallbacks are in memory only.
 - `server_stats`, `server_pulse` and `run_command` use the last listing and refresh it in the background. A machine created a moment ago can come back as "Unknown server": call `list_servers` once.
 - Stopped EC2 and Google Cloud instances have no public IP, so they leave the list until they start.
 - A server that rejects Orrery's login is not tried again for 10 minutes, so polling cannot trip fail2ban. Onboarding or fixing the login clears the wait.
@@ -272,6 +272,7 @@ The deployed container does not receive these. Use the files in `data/`.
 | `agent/src/inventory.js`, `audit.js` | `servers.json` and `~/.ssh/config`; audit log and redaction |
 | `agent/Dockerfile` | The image, built from the repository root |
 | `providers/<name>/index.js` | One module per provider: credentials, API client, discovery, tools, guards |
+| `providers/shared.js` | What the modules share: protected IPs, the JSON request with one retry |
 | `providers/netcup/admin.js`, `login.js` | netcup control tools; device login |
 | `agent/test/`, `providers/<name>/test/` | Tests with fake SSH servers and recorded fixtures |
 | `dashboard/orrery.html` | The claude.ai Artifact |

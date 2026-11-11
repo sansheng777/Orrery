@@ -41,11 +41,12 @@ function connectOptions(server) {
   return opts;
 }
 
+// (Re)starts a pooled connection's idle timer. A connection with a command still running is kept.
 function touch(key) {
   const entry = pool.get(key);
   if (!entry) return;
   clearTimeout(entry.timer);
-  entry.timer = setTimeout(() => drop(key, entry), IDLE_MS);
+  entry.timer = setTimeout(() => (entry.busy ? touch(key) : drop(key, entry)), IDLE_MS);
   entry.timer.unref?.();
 }
 
@@ -71,7 +72,7 @@ function getEntry(server) {
     return existing;
   }
   const client = new Client();
-  const entry = { client, timer: null, serverId: server.id };
+  const entry = { client, timer: null, serverId: server.id, busy: 0 };
   entry.promise = new Promise((resolve, reject) => {
     client
       .once("ready", () => resolve(client))
@@ -177,11 +178,12 @@ const channelError = (err, server) =>
     ? new Error(`${server.host} refused another session on this connection (sshd MaxSessions): too many commands are running there at once. Try again when some have finished.`)
     : err;
 
-export async function exec(server, command, { timeoutSec = 30 } = {}) {
+export async function exec(server, command, { timeoutSec = 30, closeGraceMs = 5000 } = {}) {
   const key = poolKey(server);
   const entry = getEntry(server);
   const client = await entry.promise;
   const started = Date.now();
+  entry.busy++;
   return new Promise((resolve, reject) => {
     const onChannel = (err, stream) => {
       // A refused channel (e.g. sshd's MaxSessions) fails this call only; the shared connection stays.
@@ -189,23 +191,23 @@ export async function exec(server, command, { timeoutSec = 30 } = {}) {
       const stdout = collector();
       const stderr = collector();
       let timedOut = false;
+      let grace = null;
       const timer = setTimeout(() => {
         timedOut = true;
         stream.close();
+        grace = setTimeout(finish, closeGraceMs); // a server that never confirms the close must not hang the call
       }, timeoutSec * 1000);
-      stream.on("data", (d) => {
-        touch(key); // output keeps the connection from being dropped as idle
-        stdout.add(d);
-      });
-      stream.stderr.on("data", (d) => stderr.add(d));
-      stream.on("close", (code, signal) => {
+      function finish(code, signal) {
         clearTimeout(timer);
-        if (code == null && !signal && !timedOut) {
-          return reject(new Error(`The SSH connection to ${server.host} closed before the command finished`));
-        }
+        clearTimeout(grace);
+        // No exit code, no signal and no timeout of ours: the connection went away under the command.
+        if (code == null && !signal && !timedOut) return reject(new Error(`The SSH connection to ${server.host} closed before the command finished`));
         const truncated = stdout.truncated || stderr.truncated;
         resolve({ stdout: stdout.text(), stderr: stderr.text(), code: code ?? null, signal: signal ?? null, truncated, timedOut, ms: Date.now() - started });
-      });
+      }
+      stream.on("data", (d) => stdout.add(d));
+      stream.stderr.on("data", (d) => stderr.add(d));
+      stream.on("close", finish);
     };
     try {
       client.exec(command, onChannel);
@@ -213,7 +215,7 @@ export async function exec(server, command, { timeoutSec = 30 } = {}) {
       drop(key, entry); // "Not connected": the pooled connection went away in between
       reject(err);
     }
-  });
+  }).finally(() => entry.busy--);
 }
 
 // One round trip gathers everything the dashboard shows. Sections are split by "@@name" markers.

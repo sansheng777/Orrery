@@ -63,6 +63,7 @@ The server sends these rules to every client as MCP instructions (`agent/src/ins
 | `agent/src/ssh.js`, `live.js` | SSH pool, stats script, live sampler |
 | `agent/src/audit.js` | Audit log with field redaction |
 | `providers/<name>/index.js` | One provider each: `loadConfig`, `register(server, ctx)`, listings, guards, tests in `test/` |
+| `providers/shared.js` | Shared by the providers: `protectedIps`, `jsonRequest` (timeout, one retry for GETs) |
 | `dashboard/orrery.html` | The claude.ai Artifact |
 | `deploy/` | `docker-compose.yml` (`orrery`, `tunnel`), `enable-ssh.sh` |
 

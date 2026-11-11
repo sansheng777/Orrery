@@ -1,7 +1,7 @@
 // A stand-in for the ssh2 package, used by test/pool.js. Registered as a module hook (node:module register)
 // it sends every import of "ssh2" to this file; imported that way, its Client records each connection and
 // answers every command with Client.reply(client, command), by default the address it is connected to.
-// A reply is a list of chunks (exit code 0) or { chunks, code }.
+// A reply is a list of chunks (exit code 0), { chunks, code }, or { hang: true } for a command that never ends.
 import { EventEmitter } from "node:events";
 
 export async function resolve(specifier, context, next) {
@@ -29,9 +29,9 @@ export class Client extends EventEmitter {
     cb(null, stream);
     setImmediate(() => {
       const reply = Client.reply(this, command);
-      const { chunks, code } = Array.isArray(reply) ? { chunks: reply, code: 0 } : reply;
+      const { chunks = [], code, hang } = Array.isArray(reply) ? { chunks: reply, code: 0 } : reply;
       for (const chunk of chunks) stream.emit("data", chunk);
-      stream.emit("close", code);
+      if (!hang) stream.emit("close", code);
     });
   }
 
