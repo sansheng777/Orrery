@@ -16,9 +16,11 @@ export class Client extends EventEmitter {
     this.ended = false;
     clients.push(this);
     if (Client.stall.has(opts.host)) return; // the handshake never finishes
-    setImmediate(() =>
-      Client.refuse.has(opts.host) ? this.emit("error", new Error("All configured authentication methods failed")) : this.emit("ready"),
-    );
+    setImmediate(() => {
+      // The host key comes before the login, as in a real handshake.
+      if (opts.hostVerifier && opts.hostVerifier(Client.hostKey(opts.host)) === false) return this.emit("error", new Error("Host denied (verification failed)"));
+      Client.refuse.has(opts.host) ? this.emit("error", new Error("All configured authentication methods failed")) : this.emit("ready");
+    });
   }
 
   exec(command, cb) {
@@ -46,6 +48,8 @@ export class Client extends EventEmitter {
 Client.refuse = new Set(); // hosts whose login fails
 Client.stall = new Set(); // hosts that never answer the handshake
 Client.noChannel = new Set(); // hosts that refuse to open another channel (sshd MaxSessions)
+Client.hostKeys = new Map(); // host -> the key blob it presents, when not the default
+Client.hostKey = (host) => Client.hostKeys.get(host) || Buffer.from(`host key of ${host}`);
 Client.reply = (client) => [Buffer.from(`${client.opts.host}:${client.opts.port}`)];
 
 export default { Client, utils: {} };

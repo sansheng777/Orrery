@@ -8,6 +8,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { quote } from "./ssh.js";
+import * as hostKeys from "./hostkeys.js";
 
 const JOB_TTL_MS = 24 * 3600 * 1000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -226,13 +227,18 @@ export function createBootstrapper(deps) {
     try {
       fs.writeFileSync(path.join(dir, "key"), access.privateKey.endsWith("\n") ? access.privateKey : access.privateKey + "\n", { mode: 0o600 });
       fs.writeFileSync(path.join(dir, "key-cert.pub"), access.certificate + "\n", { mode: 0o600 });
+      // Lightsail vouches for the instance's host keys ("<algorithm> <base64>" each): the temporary login is
+      // checked against them, and once it worked they are the server's pinned keys. A brand-new instance has
+      // none on record yet and is trusted on first use.
+      const known = access.hostKeys || [];
+      if (known.length) fs.writeFileSync(path.join(dir, "known_hosts"), known.map((k) => `${access.host} ${k}\n`).join(""), { mode: 0o600 });
       step(`Logging in as ${access.username}@${access.host} with the temporary login to install the key`);
       const out = await (deps.runSsh || runSsh)([
         "-i", path.join(dir, "key"),
         "-o", `CertificateFile=${path.join(dir, "key-cert.pub")}`,
         "-o", "IdentitiesOnly=yes",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", `StrictHostKeyChecking=${known.length ? "yes" : "no"}`,
+        "-o", `UserKnownHostsFile=${known.length ? path.join(dir, "known_hosts") : "/dev/null"}`,
         "-o", "BatchMode=yes",
         "-o", "ConnectTimeout=20",
         "-o", "LogLevel=ERROR", // no "Permanently added" / post-quantum notices hiding the real error
@@ -241,7 +247,14 @@ export function createBootstrapper(deps) {
         installScript(pub),
       ]);
       if (!out.includes("ORRERY_OK")) throw new Error(`The command that installs the key did not succeed: ${out.trim().slice(-300) || "no output"}`);
+      if (known.length) hostKeys.pin(server.id, known.map((k) => hostKeys.fingerprint(Buffer.from(k.split(" ")[1], "base64"))));
     } catch (e) {
+      if (/host key verification failed/i.test(e.message)) {
+        throw new Error(
+          `${server.host} presents an SSH host key that Lightsail has not recorded for ${instanceName}. If its host keys were regenerated, ` +
+            `clear Lightsail's record (Lightsail DeleteKnownHostKeys) and onboard again; otherwise something else may be answering at its address.`,
+        );
+      }
       if (looksUnreachable(e) || /timed out|Connection refused/i.test(e.message)) {
         throw new Error(`Cannot reach ${server.host}:22. Check that the Lightsail firewall lets in the Orrery host's IP (${e.message})`);
       }
@@ -277,7 +290,8 @@ export function createBootstrapper(deps) {
       const r = serverStateRequest(s, option);
       await scp.request("PATCH", `/api/v1/servers/${id}${r.query}`, { body: r.body, ...merge });
     };
-    const rescueLogin = (password) => ({ ...server, username: "root", password, keyPath: undefined });
+    // The rescue system is another system with its own host key, so the server's pinned key does not apply.
+    const rescueLogin = (password) => ({ ...server, username: "root", password, keyPath: undefined, anyHostKey: true });
     const inRescue = async (password) => {
       try {
         const r = await deps.exec(rescueLogin(password), "findmnt -n -o FSTYPE / ; echo ORRERY_OK", { timeoutSec: 20 });

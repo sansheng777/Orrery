@@ -18,6 +18,7 @@ The Orrery host holds credentials for every configured cloud account, the connec
 | Refusals and redaction | Secrets landing in the chat |
 | Audit log | Changes nobody can account for |
 | One SSH key, only on the host | Logins from anywhere else |
+| Pinned SSH host keys | Another machine posing as one of your servers |
 
 ## Connector token
 
@@ -130,9 +131,15 @@ Everything else is logged as given, including the full `command` of `run_command
 
 **The Orrery host.** Everything is lost: every cloud account, the connector token, and root on every server that trusts the key. Rotate everything (below), starting with the cloud credentials.
 
-## Known gap: SSH host keys
+## SSH host keys
 
-Orrery does not verify SSH host keys yet. It trusts whatever key a server presents. Someone who can intercept traffic to a server's IP, or who takes over a released IP, could impersonate that server and see the commands Orrery sends it, and the password of a server saved with password login. Prefer key login for saved servers and watch IPs you release. Pinning host keys on first use is planned.
+Orrery pins each server's SSH host key on the first connection and keeps the fingerprints in `data/known_hosts.json`. Every later connection must present a pinned key. If it does not, Orrery stops before it sends a login or a command, and the error shows the expected and the presented fingerprint.
+
+- **A key changes when a server is reinstalled or replaced.** Confirm that this is what happened, then accept the new key with `accept_host_key` (a D tool, audited). If nothing was reinstalled, something else may be answering at the server's address: compare first. On the server, through the provider's web console, `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` prints its fingerprint; `server_stats` returns the pinned ones as `hostKeys`.
+- **Pins belong to the server id, not the address.** A machine keeps its pin when its IP changes, and a new machine that inherits an IP starts fresh. Changing a saved server's host or port, or removing it, forgets its pin.
+- **Lightsail keys are verified, not just trusted.** Onboarding checks the temporary login against the host keys AWS recorded for the instance, then pins those.
+
+What this does not cover: the first connection to any other server is trusted as it is (trust on first use), so someone who intercepts that one connection is pinned in the server's place. netcup's rescue system has its own key and is not checked; that path is off by default.
 
 ## Prompt injection
 

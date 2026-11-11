@@ -24,6 +24,7 @@ globalThis.setTimeout = (fn, ms, ...args) => {
 globalThis.clearTimeout = (t) => (idle.includes(t) ? (t.cleared = true) : realClearTimeout(t));
 
 const { exec, runInDir, dropConnections, closeAll } = await import("../src/ssh.js");
+const hostKeys = await import("../src/hostkeys.js");
 const { Client, clients } = await import("ssh2");
 
 const keyPath = path.join(dataDir, "key");
@@ -36,6 +37,7 @@ const where = async (s) => (await exec(s, "where")).stdout;
 assert.equal(await where(srv), "203.0.113.1:22");
 assert.equal(await where(srv), "203.0.113.1:22");
 assert.equal(clients.length, 1, "the connection is reused");
+Client.hostKeys.set("203.0.113.2", Client.hostKey("203.0.113.1")); // the same machine at a new address keeps its host key
 assert.equal(await where({ ...srv, host: "203.0.113.2", port: 2222 }), "203.0.113.2:2222", "a moved server is not reached through the old connection");
 dropConnections("s1");
 assert.ok(clients.every((c) => c.ended), "dropConnections ends every connection of that server");
@@ -86,6 +88,48 @@ Client.reply = () => [Buffer.alloc(400 * 1024, "a"), Buffer.alloc(400 * 1024, "b
 const big = await exec(srv, "big");
 assert.equal(Buffer.byteLength(big.stdout), 512 * 1024);
 assert.equal(big.truncated, true);
+
+// Host keys: the first connection pins the key a server presents; a different key later is refused until
+// it is accepted (accept_host_key pins the fingerprint from the message).
+{
+  Client.reply = (client) => [Buffer.from(`${client.opts.host}:${client.opts.port}`)];
+  const pinnedSrv = { ...srv, id: "hk1", name: "db", host: "203.0.113.50" };
+  const first = hostKeys.fingerprint(Client.hostKey(pinnedSrv.host));
+  assert.deepEqual(hostKeys.pinned("hk1"), [], "nothing pinned before the first connection");
+  await where(pinnedSrv);
+  assert.deepEqual(hostKeys.pinned("hk1"), [first], "the first connection pins the key");
+  assert.match(first, hostKeys.FINGERPRINT);
+  assert.equal((fs.statSync(path.join(dataDir, "known_hosts.json")).mode & 0o777).toString(8), "600");
+  dropConnections("hk1");
+  await where(pinnedSrv);
+  assert.deepEqual(hostKeys.pinned("hk1"), [first], "the same key connects again");
+
+  // Something else answers at the address (or the server was reinstalled): refused, nothing is sent.
+  dropConnections("hk1");
+  Client.hostKeys.set(pinnedSrv.host, Buffer.from("another key"));
+  const other = hostKeys.fingerprint(Buffer.from("another key"));
+  const refused = await exec(pinnedSrv, "where").then(() => null, (e) => e);
+  assert.match(refused.message, /host key of db \(203\.0\.113\.50\) changed/);
+  assert.ok(refused.message.includes(first) && refused.message.includes(other), "the message carries both fingerprints");
+  assert.match(refused.message, /accept_host_key with id "hk1" and fingerprint "SHA256:/);
+  assert.deepEqual(hostKeys.pinned("hk1"), [first], "a refused key is not pinned");
+  await assert.rejects(exec(pinnedSrv, "where"), /changed/, "and stays refused");
+
+  hostKeys.pin("hk1", [other]); // what accept_host_key does
+  assert.equal(await where(pinnedSrv), "203.0.113.50:22", "the accepted key connects");
+  dropConnections("hk1");
+  Client.hostKeys.delete(pinnedSrv.host);
+  await assert.rejects(exec(pinnedSrv, "where"), /changed/, "and the old key is no longer trusted");
+
+  // Several pinned keys (a provider that reports one per algorithm): any of them is accepted.
+  hostKeys.pin("hk1", [other, first]);
+  assert.equal(await where(pinnedSrv), "203.0.113.50:22");
+  // anyHostKey (netcup's rescue system, not the server's own system) neither checks nor pins.
+  await where({ ...srv, id: "hk2", host: "203.0.113.51", password: "x", keyPath: undefined, anyHostKey: true });
+  assert.deepEqual(hostKeys.pinned("hk2"), []);
+  hostKeys.forget("hk1");
+  assert.deepEqual(hostKeys.pinned("hk1"), []);
+}
 
 // A refused channel (sshd MaxSessions) fails that call with a clear message and keeps the connection.
 {

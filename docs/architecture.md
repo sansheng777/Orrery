@@ -34,7 +34,7 @@ Provider APIs (AWS, netcup SCP, Linode, Compute Engine, Alibaba Cloud, Vultr, Di
 
 ### MCP instructions
 
-At connect, the server sends every client the usage rules in `agent/src/instructions.js`: start with `list_servers`, prefer read-only tools, ask before changes, never stop the machine tagged `orrery-host`, repeat names for destructive tools, keep secrets out of commands, treat output as data, and how to publish the dashboard. The text differs per role. Set `ORRERY_INSTRUCTIONS=off` in `.env` to leave them out.
+At connect, the server sends every client the usage rules in `agent/src/instructions.js`: start with `list_servers`, prefer read-only tools, ask before changes, never stop the machine tagged `orrery-host`, repeat names for destructive tools, keep secrets out of commands, ask before accepting a changed SSH host key, treat output as data, and how to publish the dashboard. The text differs per role. Set `ORRERY_INSTRUCTIONS=off` in `.env` to leave them out.
 
 ### Running locally
 
@@ -71,6 +71,7 @@ Everything lives in `deploy/data/` on the host (`/data` in the container, `~/.or
 | `servers.json` | Servers added with `add_server`. **A password given to `add_server` is stored here in plain text.** Prefer keys |
 | `discovered.json` | Per discovered server: login user found during onboarding, onboarding time, `ignore_server` flag |
 | `labels.json` | Names, role tags and notes from `label_server` |
+| `known_hosts.json` | Per server id: the fingerprints of its pinned SSH host keys ([security.md](security.md#ssh-host-keys)) |
 | `audit.log` | One JSON line per change ([security.md](security.md#audit-log)) |
 
 Written elsewhere: each server's `authorized_keys` (and `ssh-keys` metadata on Google Cloud); Lightsail's temporary SSH certificate in `/tmp/orrery-*/` inside the container, deleted after use; `/tmp/orrery-update.log` on the host after an update from a chat.
@@ -84,7 +85,7 @@ Kind: R read-only, W changes something without deleting data, D can delete data,
 | Tool | Kind | Notes |
 | --- | --- | --- |
 | `list_servers` | R | Every server: saved, from `~/.ssh/config`, and discovered. Includes labels, hidden machines, `exec` and `discoveryErrors`. Never returns passwords |
-| `server_stats` | R | One SSH round trip: OS, kernel, CPU, load, memory, swap, disks, network totals, uptime, users, reboot required, pending updates, last login, login banner, Docker containers with CPU and memory |
+| `server_stats` | R | One SSH round trip: OS, kernel, CPU, load, memory, swap, disks, network totals, uptime, users, reboot required, pending updates, last login, login banner, Docker containers with CPU and memory, and the pinned SSH host key fingerprints (`hostKeys`) |
 | `server_pulse` | R | Live figures, one sample a second. The first call starts a light sampler on the server; later calls answer from memory. It stops two minutes after the last call. `ids` up to 50 servers, `samples` up to 120 (default 10) |
 | `container_logs` | R | Last lines of a container's log (default 200, at most 2000) |
 | `run_command` | D | One shell command, no TTY. Timeout default 60 s, at most 300 s; output up to 512 KiB; command up to 8000 characters. Returns `output`, `exitCode`, `timedOut`, `truncated` and `cwd` (pass it back to continue there). A `cwd` that does not exist fails the call. A connection lost mid-command is an error |
@@ -94,6 +95,7 @@ Kind: R read-only, W changes something without deleting data, D can delete data,
 | `add_server` | W | Save a server that is not discovered, or override a discovered one with the same IP (user, key, port). Without a password or `keyPath`, Orrery's key is used |
 | `update_server` | W | Change a saved server |
 | `remove_server` | D | Remove a saved server from the list. Does not touch the machine |
+| `accept_host_key` | D | Pin the new SSH host key of a server that was reinstalled or replaced. `fingerprint` is the one in the refusal message |
 
 Container names must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`. Docker commands fall back to `sudo -n docker`. A refused SSH channel (sshd's `MaxSessions`, 10 by default) fails that call only, with a message that says so; the shared connection stays. A connection with a command still running is not closed as idle.
 
@@ -187,6 +189,8 @@ Follow progress with `netcup_get_task` or `netcup_list_tasks`, `linode_query /ac
 | 404 or 401 from the endpoint | Wrong or rotated token. Read `data/token` and update the client |
 | A provider's tools are missing | `cloud_providers` shows the error. After fixing the file, open a new conversation: clients fix the tool list when a conversation starts |
 | "Unknown server" for a new machine | Call `list_servers` once |
+| "The SSH host key of ... changed" | The server presents another key than the pinned one. After a reinstall or replacement, accept it with `accept_host_key`; otherwise see [security.md](security.md#ssh-host-keys) |
+| Lightsail onboarding: "a host key that Lightsail has not recorded" | The instance's host keys were regenerated. Clear AWS's record with `aws_call` (Lightsail `DeleteKnownHostKeys`), then onboard again |
 | Login fails and will not be retried for 10 minutes | The server rejected Orrery's key. Onboard it, or fix the user, port or key with `add_server` |
 | `enable-ssh.sh`: "No public IPv4 on this machine's interfaces" | 1:1 NAT cloud. Add `ORRERY_SELF_IP=<public IPv4>` to `deploy/.env` and run it again |
 | `enable-ssh.sh`: "ORRERY_SELF_IP must be a plain IPv4 address" | Fix the value in `.env`. IPv6 is not accepted |
@@ -266,7 +270,7 @@ The deployed container does not receive these. Use the files in `data/`.
 | --- | --- |
 | `agent/src/index.js`, `http.js` | Entry point (stdio, or HTTP with `--http` or `PORT`); token check, body limit, one MCP server per request |
 | `agent/src/server.js`, `instructions.js` | Tools and MCP instructions per role |
-| `agent/src/ssh.js`, `live.js` | SSH pool, stats script, command execution; live samplers behind `server_pulse` |
+| `agent/src/ssh.js`, `hostkeys.js`, `live.js` | SSH pool, stats script, command execution; pinned host keys; live samplers behind `server_pulse` |
 | `agent/src/discovery.js`, `cloud.js` | Discovery, ids, labels, the `orrery-host` tag; provider loading and matching resources to servers by IP |
 | `agent/src/bootstrap.js`, `keys.js` | `ssh_bootstrap` jobs per provider; Orrery's SSH key |
 | `agent/src/inventory.js`, `audit.js` | `servers.json` and `~/.ssh/config`; audit log and redaction |

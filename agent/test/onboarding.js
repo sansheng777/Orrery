@@ -381,6 +381,44 @@ const base = { publicKey: () => PUB, keyPath: "/data/keys/id_ed25519", discovery
   assert.ok(sshArgs.some((a) => a.startsWith("CertificateFile=")));
   assert.ok(!fs.existsSync(tmp), "temporary files are removed");
   assert.ok(!JSON.stringify(b.status()).includes("BEGIN KEY"));
+  assert.ok(sshArgs.includes("StrictHostKeyChecking=no"), "no host keys from Lightsail yet: trusted on first use");
+}
+
+// Lightsail reports the instance's host keys: the temporary login is checked against them, and once it
+// worked they replace whatever key was pinned on first use.
+{
+  const hostKeys = await import("../src/hostkeys.js");
+  const blob = Buffer.from("lightsail host key").toString("base64");
+  let known = null;
+  let sshArgs = null;
+  let trusted = false;
+  let refuse = true;
+  const b = createBootstrapper({
+    ...base,
+    exec: async () => (trusted ? { stdout: "ORRERY_OK\n" } : Promise.reject(new Error("auth failed"))),
+    aws: { config: {}, lightsailAccess: async () => ({ username: "admin", host: "198.51.100.30", privateKey: "k", certificate: "c", hostKeys: [`ssh-ed25519 ${blob}`] }) },
+    runSsh: async (args) => {
+      sshArgs = args;
+      known = fs.readFileSync(args.find((a) => a.startsWith("UserKnownHostsFile=")).split("=")[1], "utf8");
+      if (refuse) throw new Error("ssh exited with code 255; Host key verification failed.");
+      trusted = true;
+      return "ORRERY_OK\n";
+    },
+  });
+  const target = { ...fromAws(ls), id: "lightsail:ap-northeast-1:pinned-1" };
+  const firstSeen = hostKeys.fingerprint(Buffer.from("key seen on first use"));
+  hostKeys.pin(target.id, [firstSeen]);
+
+  const refused = await waitJob(b, b.start(target).id);
+  assert.equal(refused.status, "failed");
+  assert.match(refused.error, /host key that Lightsail has not recorded.*DeleteKnownHostKeys/);
+  assert.deepEqual(hostKeys.pinned(target.id), [firstSeen], "a refused login pins nothing");
+
+  refuse = false;
+  assert.equal((await waitJob(b, b.start(target).id)).status, "done");
+  assert.ok(sshArgs.includes("StrictHostKeyChecking=yes"));
+  assert.equal(known, `198.51.100.30 ssh-ed25519 ${blob}\n`);
+  assert.deepEqual(hostKeys.pinned(target.id), [hostKeys.fingerprint(Buffer.from("lightsail host key"))], "Lightsail's keys become the pinned ones");
 }
 
 // netcup: never the Orrery host itself.

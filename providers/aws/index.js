@@ -469,7 +469,16 @@ export async function lightsailAccess(config, { region, instanceName }) {
   const res = await client(config, lightsail.LightsailClient, region).send(new lightsail.GetInstanceAccessDetailsCommand({ instanceName, protocol: "ssh" }));
   const d = res.accessDetails || {};
   if (!d.privateKey || !d.certKey || !d.ipAddress) throw new Error(`Lightsail returned no SSH access details for ${instanceName}`);
-  return { username: d.username, host: d.ipAddress, privateKey: d.privateKey, certificate: d.certKey };
+  return { username: d.username, host: d.ipAddress, privateKey: d.privateKey, certificate: d.certKey, hostKeys: list(d.hostKeys).map(hostKeyLine).filter(Boolean) };
+}
+
+// A host key as Lightsail recorded it -> the "<algorithm> <base64>" of a known_hosts line. Anything that
+// is not an SSH public key of that algorithm is left out, so an unexpected answer cannot break onboarding.
+export function hostKeyLine({ algorithm, publicKey } = {}) {
+  const b64 = String(publicKey || "").trim().split(/\s+/).pop();
+  const blob = Buffer.from(b64, "base64");
+  const named = blob.length > 4 && blob.subarray(4, 4 + blob.readUInt32BE(0)).toString() === algorithm;
+  return named ? `${algorithm} ${b64}` : null;
 }
 
 // ---------- registration ----------

@@ -11,7 +11,7 @@ AI agents: start with [AGENTS.md](AGENTS.md). It has the deploy commands, client
 - **Monitoring.** CPU, load, memory, swap, disks, network, Docker containers, pending updates and last login in one SSH round trip. `server_pulse` gives one sample a second.
 - **Shell and Docker.** Run commands, read container logs, start, stop or restart containers.
 - **Cloud control.** Power, delete, rebuild or reinstall, plus a generic API tool per provider with a read-only `*_query` twin you can allow without a prompt.
-- **Guards.** The Orrery host and IPs you list cannot be stopped or deleted through the cloud tools. Irreversible actions must repeat the machine's name. Secret-returning APIs are refused and secrets in answers are redacted. Every change goes to an audit log. Details: [docs/security.md](docs/security.md).
+- **Guards.** The Orrery host and IPs you list cannot be stopped or deleted through the cloud tools. Irreversible actions must repeat the machine's name. Secret-returning APIs are refused and secrets in answers are redacted. SSH host keys are pinned, so a changed key stops the connection. Every change goes to an audit log. Details: [docs/security.md](docs/security.md).
 - **Usage rules built in.** At connect, Orrery sends each client its operating rules as MCP instructions (`agent/src/instructions.js`).
 
 ## Supported providers

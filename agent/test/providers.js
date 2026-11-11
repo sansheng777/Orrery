@@ -208,6 +208,33 @@ assert.equal(match(["198.51.100.99"]), null);
   await new Promise((resolve) => httpServer.close(resolve));
 }
 
+// accept_host_key: offered in both roles, takes only a well-formed fingerprint, and replaces the pin;
+// changing a saved server's address or removing it forgets the pin.
+{
+  const hostKeys = await import("../src/hostkeys.js");
+  const { addServer } = await import("../src/inventory.js");
+  const fp = hostKeys.fingerprint(Buffer.from("a new key"));
+  for (const role of ["hub", "admin"]) {
+    const c = await connect(role);
+    assert.ok((await c.listTools()).tools.some((t) => t.name === "accept_host_key" && t.annotations.destructiveHint), `${role}: asks for confirmation`);
+    const saved = addServer({ name: `pin-${role}`, host: "203.0.113.77", username: "root" });
+    hostKeys.pin(saved.id, [hostKeys.fingerprint(Buffer.from("the old key"))]);
+    assert.ok((await c.callTool({ name: "accept_host_key", arguments: { id: saved.id, fingerprint: "SHA256:tooshort" } })).isError, "a malformed fingerprint is refused");
+    assert.ok((await c.callTool({ name: "accept_host_key", arguments: { id: "no-such-server", fingerprint: fp } })).isError, "the server must exist");
+    const r = await c.callTool({ name: "accept_host_key", arguments: { id: saved.id, fingerprint: fp } });
+    assert.equal(r.structuredContent.fingerprint, fp);
+    assert.deepEqual(hostKeys.pinned(saved.id), [fp]);
+    await c.callTool({ name: "update_server", arguments: { id: saved.id, name: "renamed" } });
+    assert.deepEqual(hostKeys.pinned(saved.id), [fp], "a rename keeps the pin");
+    await c.callTool({ name: "update_server", arguments: { id: saved.id, host: "203.0.113.78" } });
+    assert.deepEqual(hostKeys.pinned(saved.id), [], "another address is pinned afresh");
+    hostKeys.pin(saved.id, [fp]);
+    await c.callTool({ name: "remove_server", arguments: { id: saved.id } });
+    assert.deepEqual(hostKeys.pinned(saved.id), []);
+    await c.close();
+  }
+}
+
 // Audit redaction: by field name, and the value of key/value pairs whose key looks secret.
 {
   const { redact } = await import("../src/audit.js");

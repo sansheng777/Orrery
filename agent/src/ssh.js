@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { Client } from "ssh2";
 import { KEY_PATH } from "./keys.js";
+import * as hostKeys from "./hostkeys.js";
 
 const IDLE_MS = 5 * 60 * 1000;
 const MAX_OUTPUT = 512 * 1024;
@@ -12,7 +13,8 @@ const DEFAULT_KEYS = [KEY_PATH, ...["id_ed25519", "id_ecdsa", "id_rsa"].map((k) 
 
 const pool = new Map(); // poolKey -> { promise, client, timer, serverId }
 
-function connectOptions(server) {
+// onHostKeyRefused(err) is called when the server presents a host key other than its pinned one.
+function connectOptions(server, onHostKeyRefused) {
   const opts = {
     host: server.host,
     port: server.port || 22,
@@ -20,6 +22,16 @@ function connectOptions(server) {
     readyTimeout: 15000,
     keepaliveInterval: 15000,
   };
+  // The first connection pins the server's host key; a different key later refuses the connection
+  // (hostkeys.js). anyHostKey skips this for a system that is not the server's own (netcup's rescue system).
+  if (!server.anyHostKey) {
+    opts.hostVerifier = (key) => {
+      const got = hostKeys.fingerprint(key);
+      const { ok, expected } = hostKeys.check(server.id, got);
+      if (!ok) onHostKeyRefused(hostKeyChanged(server, expected, got));
+      return ok;
+    };
+  }
   // Every credential in turn: password, then the given key (or each default key that exists), then
   // ssh-agent. ssh2's plain `privateKey` option takes only one key.
   const methods = [];
@@ -40,6 +52,13 @@ function connectOptions(server) {
   opts.authHandler = methods;
   return opts;
 }
+
+const hostKeyChanged = (server, expected, got) =>
+  new Error(
+    `The SSH host key of ${server.name || server.host} (${server.host}) changed: expected ${expected.join(" or ")}, got ${got}. ` +
+      `That is normal after the server was reinstalled or replaced; otherwise something else may be answering at its address. ` +
+      `Not connecting. Ask the user, then call accept_host_key with id "${server.id}" and fingerprint "${got}".`,
+  );
 
 // (Re)starts a pooled connection's idle timer. A connection with a command still running is kept.
 function touch(key) {
@@ -74,12 +93,13 @@ function getEntry(server) {
   const client = new Client();
   const entry = { client, timer: null, serverId: server.id, busy: 0 };
   entry.promise = new Promise((resolve, reject) => {
+    let hostKeyRefused = null;
     client
       .once("ready", () => resolve(client))
       // ssh2 can report more than one error per connection; one without a listener would crash the process.
       .on("error", (err) => {
         drop(key, entry);
-        reject(new Error(`SSH to ${server.username}@${server.host}:${server.port || 22} failed: ${err.message}`));
+        reject(hostKeyRefused || new Error(`SSH to ${server.username}@${server.host}:${server.port || 22} failed: ${err.message}`));
       })
       .once("close", () => {
         clearTimeout(entry.timer);
@@ -88,7 +108,7 @@ function getEntry(server) {
         // so without this the caller would wait forever. After "ready" this does nothing.
         reject(new Error(`SSH to ${server.username}@${server.host}:${server.port || 22} closed before it was ready`));
       });
-    client.connect(connectOptions(server));
+    client.connect(connectOptions(server, (e) => (hostKeyRefused = e)));
   });
   // A connection that never came up (unreadable key, refused login) is not kept: the next call tries again.
   entry.promise.catch(() => drop(key, entry));

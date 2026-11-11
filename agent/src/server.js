@@ -4,6 +4,7 @@ import { z } from "zod";
 import { addServer, updateServer, removeServer, DATA_DIR } from "./inventory.js";
 import { stats, runInDir, exec, quote, dropConnections } from "./ssh.js";
 import * as live from "./live.js";
+import * as hostKeys from "./hostkeys.js";
 import { registerProviders } from "./cloud.js";
 import { audited } from "./audit.js";
 import { createDiscovery } from "./discovery.js";
@@ -253,6 +254,7 @@ function registerSshTools(server, { allowExec, change, onboarding = false }) {
       const saved = updateServer(id, patch);
       dropConnections(id); // a new address or login must not keep using the old connection
       live.forget(id);
+      if (patch.host !== undefined || patch.port !== undefined) hostKeys.forget(id); // another address: its key is pinned afresh
       return saved;
     }),
   );
@@ -269,7 +271,27 @@ function registerSshTools(server, { allowExec, change, onboarding = false }) {
       const r = removeServer(id);
       dropConnections(id);
       live.forget(id);
+      hostKeys.forget(id);
       return r;
+    }),
+  );
+
+  server.registerTool(
+    "accept_host_key",
+    {
+      title: "Accept a server's new SSH host key",
+      description:
+        "Orrery pins each server's SSH host key on the first connection and refuses to connect when the key changes. After a server was reinstalled or replaced, accept the new key here: fingerprint is the one in the refusal message (SHA256:...). Do this only when the user confirms the change is expected; an unexpected change can mean something else is answering at the server's address.",
+      inputSchema: { id: z.string(), fingerprint: z.string().regex(hostKeys.FINGERPRINT, "SHA256:... as shown in the refusal message") },
+      annotations: DESTRUCTIVE,
+    },
+    change("accept_host_key", async ({ id, fingerprint }) => {
+      const s = await resolve(id);
+      hostKeys.pin(id, [fingerprint]);
+      dropConnections(id);
+      live.forget(id);
+      authFailures.delete(id);
+      return { id, name: s.name, host: s.host, fingerprint };
     }),
   );
 
@@ -278,11 +300,11 @@ function registerSshTools(server, { allowExec, change, onboarding = false }) {
     {
       title: "Server stats",
       description:
-        "One SSH round trip: OS, CPU %, load, memory, swap, disks, network totals, uptime, login banner, and Docker containers with CPU/memory.",
+        "One SSH round trip: OS, CPU %, load, memory, swap, disks, network totals, uptime, login banner, and Docker containers with CPU/memory. hostKeys are the fingerprints of the SSH host key pinned for the server.",
       inputSchema: { id: z.string() },
       annotations: READ,
     },
-    tool(async ({ id }) => probe(id, stats)),
+    tool(async ({ id }) => ({ ...(await probe(id, stats)), hostKeys: hostKeys.pinned(id) })),
   );
 
   server.registerTool(

@@ -150,6 +150,18 @@ for (const operation of ["GetConsoleOutput", "GetConsoleScreenshot"]) {
   for (const fn of [call, query]) await assert.rejects(fn(cfg, { service: "ec2", region: "ap-northeast-1", operation, input: { InstanceId: "i-0123456789abcdef0" } }), /returns the instance's console, which can show passwords/, operation);
 }
 
+// Lightsail's recorded host keys become known_hosts lines; anything that is not an SSH key of that algorithm is dropped.
+{
+  const { hostKeyLine } = await import("../index.js");
+  const sshString = (v) => Buffer.concat([Buffer.from([0, 0, 0, v.length]), Buffer.from(v)]);
+  const b64 = Buffer.concat([sshString("ssh-ed25519"), sshString("k".repeat(32))]).toString("base64");
+  assert.equal(hostKeyLine({ algorithm: "ssh-ed25519", publicKey: b64 }), `ssh-ed25519 ${b64}`);
+  assert.equal(hostKeyLine({ algorithm: "ssh-ed25519", publicKey: `ssh-ed25519 ${b64}\n` }), `ssh-ed25519 ${b64}`, "a full key line is accepted too");
+  assert.equal(hostKeyLine({ algorithm: "ssh-rsa", publicKey: b64 }), null, "another algorithm than the key says");
+  assert.equal(hostKeyLine({ algorithm: "x509-cert", publicKey: "MIIC" }), null, "an RDP certificate");
+  for (const bad of [{}, undefined, { algorithm: "ssh-ed25519" }, { algorithm: "ssh-ed25519", publicKey: "not a key" }]) assert.equal(hostKeyLine(bad), null);
+}
+
 // ---------- config ----------
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hub-aws-"));
 assert.equal(loadConfig({}, tmp).configured, false);
