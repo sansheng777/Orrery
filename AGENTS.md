@@ -67,7 +67,11 @@ For a tool on their own computer, the line in point 2 is this one instead (the v
 
 > In claude.ai, open Settings → Connectors → Add custom connector. Name: `Orrery`. URL: the one the installer printed.
 
-For another client, the user runs or enters what "Connect a client" shows, themselves, with LONG_SECRET as the token.
+For any other client (Claude Code, Codex, Cursor, Gemini CLI, any MCP client that supports remote servers with headers), send this instead:
+
+> Add a remote MCP server to your client yourself. URL: `https://HOSTNAME/mcp`. Header: `Authorization: Bearer LONG_SECRET`, where LONG_SECRET is the last part of the URL the installer printed, after `/mcp/`.
+
+The exact setting for each client is in `docs/deploy.md`, step 6. These clients connect from the user's own IP address, which is why step 4 used the line with `ORRERY_ALLOW_IPS`.
 
 **Step 6. The user sets the tool permissions.** Send this:
 
