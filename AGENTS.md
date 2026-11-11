@@ -6,12 +6,15 @@ This file is for AI agents. Part 1 is for helping a user deploy and use Orrery; 
 
 ## Part 1: deploying and using Orrery
 
-### First: the Orrery host
+### First: what to ask the user
 
-Orrery needs one dedicated, always-on VPS, the Orrery host. It runs there, every client connects to it, and all credentials stay on it. Before any deploy step, ask the user which machine that is.
+Setting up Orrery needs three things from the user. Ask for all three before any step:
 
-- It runs nothing else, and it is not a machine an assistant may stop or rebuild. Debian or Ubuntu, a public IPv4, root SSH access. Minimum: 2 vCPU, 2 GB of memory, 2 GB of swap, 20 GB of disk.
-- Reaching it: an agent on the user's computer can use their SSH access to the host. An agent in a cloud session or a chat usually cannot reach it, so it hands the user the commands to run there. Your own shell is not the Orrery host: never run the deploy commands in it.
+1. **The Orrery host**: one dedicated, always-on VPS. Orrery runs there, every client connects to it, and all credentials stay on it. It runs nothing else, and it is not a machine an assistant may stop or rebuild. Debian or Ubuntu, a public IPv4, root SSH access. Minimum: 2 vCPU, 2 GB of memory, 2 GB of swap, 20 GB of disk.
+2. **A domain on Cloudflare**, and the hostname Orrery gets on it, such as `orrery.example.com`.
+3. **A Cloudflare API token** for the install, which they create themselves (permissions below) and type into the installer. It never goes into the conversation.
+
+- Reaching the host: an agent on the user's computer can use their SSH access to it. An agent in a cloud session or a chat usually cannot reach it, so it hands the user the command to run there. Your own shell is not the Orrery host: never run the deploy command in it.
 - No such machine: the user creates one first, at any provider. Or they use the local mode in the client table below, which needs no server but runs on their own computer and offers only the SSH tools and read-only cloud listings.
 
 ### Deploy (run on the Orrery host as root)
