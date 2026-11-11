@@ -1,0 +1,20 @@
+# Orrery
+
+> Self-hosted MCP server that discovers servers across AWS (EC2, Lightsail), netcup, Linode, Google Cloud, Alibaba Cloud, Vultr, DigitalOcean and Kamatera, onboards them over SSH, and gives AI assistants tools to monitor and control them, with guards for destructive actions. Runs in Docker behind a Cloudflare Tunnel. MIT.
+
+Start with AGENTS.md: deploy commands, client setup, publishing the claude.ai dashboard, and the operating rules.
+
+## Docs
+
+- [AGENTS.md](AGENTS.md): for AI agents deploying, using or changing Orrery
+- [README.md](README.md): overview, features, supported providers
+- [docs/deploy.md](docs/deploy.md): deployment from scratch, clients, daily operations
+- [docs/providers.md](docs/providers.md): credentials and permissions per provider
+- [docs/security.md](docs/security.md): security model, protected machines, key rotation
+- [docs/architecture.md](docs/architecture.md): tool reference, discovery and onboarding, troubleshooting, configuration
+
+## Code
+
+- [agent/src/instructions.js](agent/src/instructions.js): the rules sent to every MCP client
+- [dashboard/orrery.html](dashboard/orrery.html): claude.ai Artifact dashboard
+- [deploy/docker-compose.yml](deploy/docker-compose.yml): services `orrery` and `tunnel`

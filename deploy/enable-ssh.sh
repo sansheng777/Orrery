@@ -10,12 +10,18 @@ cd "$(dirname "$0")"
 echo "== Recording this machine's public IPv4"
 # A value already in .env wins: on clouds with 1:1 NAT (AWS, Google Cloud, Alibaba Cloud and others)
 # the public address is not on any network interface, so set it there by hand.
-SELF_IP=$( (grep -s '^ORRERY_SELF_IP=' .env || true) | tail -1 | cut -d= -f2- | tr -d '[:space:]"')
+# An inline comment (from the first '#') is dropped before trimming spaces and quotes.
+SELF_IP=$( (grep -s '^ORRERY_SELF_IP=' .env || true) | tail -1 | cut -d= -f2- | cut -d'#' -f1 | tr -d "[:space:]\"'")
 if [ -z "$SELF_IP" ]; then
-  SELF_IP=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | grep -vE '^(10|127|192\.168|172\.(1[6-9]|2[0-9]|3[01]))\.' | head -1 || true)
+  # Skip private (RFC 1918), loopback and carrier-grade NAT (100.64.0.0/10) addresses.
+  SELF_IP=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | grep -vE '^(10|127|192\.168|172\.(1[6-9]|2[0-9]|3[01])|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7]))\.' | head -1 || true)
 fi
 if [ -z "$SELF_IP" ]; then
   echo "No public IPv4 on this machine's interfaces (normal behind 1:1 NAT). Add ORRERY_SELF_IP=<this machine's public IP> to .env and run again." >&2
+  exit 1
+fi
+if ! [[ "$SELF_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  echo "ORRERY_SELF_IP must be a plain IPv4 address such as 203.0.113.10, got: $SELF_IP. Fix it in .env and run again." >&2
   exit 1
 fi
 touch .env && chmod 600 .env
@@ -46,8 +52,8 @@ install -d -m 700 /root/.ssh
 touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
 grep -qxF "$PUB" /root/.ssh/authorized_keys || echo "$PUB" >> /root/.ssh/authorized_keys
 
-if sshd -T 2>/dev/null | grep -qi '^permitrootlogin no'; then
-  echo "Note: sshd refuses root logins, so the connector cannot reach this machine. Set PermitRootLogin prohibit-password and restart sshd." >&2
+if sshd -T 2>/dev/null | grep -Ei '^permitrootlogin (no|forced-commands-only)' >/dev/null; then
+  echo "Note: sshd has PermitRootLogin no or forced-commands-only, so the connector cannot run commands on this machine as root. Set PermitRootLogin prohibit-password and restart sshd." >&2
 fi
 
 echo

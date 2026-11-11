@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TOKEN_URL, loadConfig } from "../index.js";
-import { createScp, endpointsOf, matchEndpoint, serverStateRequest, assertServerName, assertNotSelf, summarize, protectedIps, redactPasswords, registerAdmin } from "../admin.js";
+import { createScp, endpointsOf, matchEndpoint, serverStateRequest, assertServerName, assertNotSelf, summarize, protectedIps, protectedIpOf, redactPasswords, registerAdmin } from "../admin.js";
 
 const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const fixture = (f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
@@ -17,7 +17,7 @@ function fakeScp({ userinfo = { sub: "f1e2d3c4-0000-4000-8000-000000000001", id:
   let expired = expireOnce;
   const fetchImpl = async (url, init = {}) => {
     const method = init.method || "GET";
-    if (url === TOKEN_URL) return json(200, { ...fixture("token.json"), refresh_token: "admin-test-token" });
+    if (url === TOKEN_URL) return json(200, { ...fixture("token.json"), refresh_token: new URLSearchParams(init.body).get("refresh_token") }); // not rotated
     if (url.endsWith("/userinfo")) return json(200, userinfo);
     const u = new URL(url);
     calls.push({ method, path: u.pathname.replace("/scp-core", "") + u.search, type: init.headers["content-type"] || null, body: init.body ? JSON.parse(init.body) : undefined });
@@ -65,8 +65,9 @@ assert.equal((await assertServerName(scp, 412345, " netcup-nbg ")).id, 412345);
 // ---------- user id: userinfo first, then the newest task ----------
 assert.equal(await scp.getUserId(), "50123");
 f = fakeScp({ userinfo: { sub: "f1e2d3c4-0000-4000-8000-000000000001" } });
-scp = createScp(config, f.fetchImpl, {});
+scp = createScp(() => ({ configured: true, refreshToken: "fallback-test-token", file: null }), f.fetchImpl, {});
 assert.equal(await scp.getUserId(), "50123", "falls back to the executing user of the newest task");
+assert.deepEqual(f.calls.map((c) => c.path), ["/api/v1/tasks?limit=1&offset=0"]);
 assert.equal(await createScp(config, f.fetchImpl, { NETCUP_USER_ID: "777" }).getUserId(), "777");
 
 // ---------- spec matching for the generic tool ----------
@@ -78,6 +79,21 @@ assert.equal(matchEndpoint(eps, "POST", "/api/v1/users/50123/firewall-policies")
 assert.equal(matchEndpoint(eps, "DELETE", "/api/v1/servers/42/snapshots"), null, "undocumented method");
 assert.equal(matchEndpoint(eps, "GET", "/api/v1/servers/42/snapshots/x/y"), null, "placeholders do not span segments");
 
+// ---------- the spec and the user id are cached across createScp instances (one per HTTP request) ----------
+{
+  let userinfoCalls = 0;
+  const g = fakeScp();
+  const counting = async (url, init) => (url.endsWith("/userinfo") && userinfoCalls++, g.fetchImpl(url, init));
+  const sameAccount = () => ({ configured: true, refreshToken: "cache-test-token", file: null });
+  for (let i = 0; i < 3; i++) {
+    const perRequest = createScp(sameAccount, counting, {});
+    assert.equal((await perRequest.getSpec()).version, "2026.0728.082537");
+    assert.equal(await perRequest.getUserId(), "50123");
+  }
+  assert.equal(g.calls.filter((c) => c.path === "/api/v1/openapi").length, 1, "the OpenAPI spec is fetched once");
+  assert.equal(userinfoCalls, 1, "the user id is looked up once");
+}
+
 // ---------- actions without input still carry a Content-Type (netcup answers 400 otherwise) ----------
 {
   const g = fakeScp();
@@ -85,23 +101,31 @@ assert.equal(matchEndpoint(eps, "GET", "/api/v1/servers/42/snapshots/x/y"), null
   await plain.request("POST", "/api/v1/servers/412345/rescuesystem").catch(() => {});
   await plain.request("DELETE", "/api/v1/servers/412345/rescuesystem");
   await plain.request("GET", "/api/v1/servers/412345?loadServerLiveInfo=false");
-  const [post, del, get] = g.calls;
+  await plain.request("GET", "/api/v1/servers/412345?loadServerLiveInfo=false", { body: { hostname: "x" } });
+  const [post, del, get, getWithBody] = g.calls;
   assert.equal(post.type, "application/json");
   assert.deepEqual(post.body, {});
   assert.equal(del.type, null, "DELETE without input sends no body");
   assert.equal(get.type, null);
+  assert.deepEqual([getWithBody.type, getWithBody.body], [null, undefined], "a GET never carries a body");
 }
 
-// ---------- the middle server and the other protected machines are never taken down from a chat ----------
+// ---------- the Orrery host and the other protected machines are never taken down from a chat ----------
 {
   const g = fakeScp();
   const guarded = createScp(config, g.fetchImpl, {});
-  await assert.rejects(assertNotSelf(guarded, 412345, "198.51.100.20"), /middle server/);
+  await assert.rejects(assertNotSelf(guarded, 412345, "198.51.100.20"), /Orrery host/);
   await assertNotSelf(guarded, 412345, "203.0.113.9"); // another machine: allowed
   await assert.rejects(assertNotSelf(guarded, 412345, "203.0.113.9", ["198.51.100.21"]), /protected IP 198\.51\.100\.21/);
   const before = g.calls.length;
-  await assert.rejects(assertNotSelf(guarded, 412345, null), /Set ORRERY_SELF_IP \(deploy\/enable-ssh\.sh\)/, "unknown middle server: nothing is taken down");
+  await assert.rejects(assertNotSelf(guarded, 412345, null), /Set ORRERY_SELF_IP \(deploy\/enable-ssh\.sh\)/, "unknown Orrery host: nothing is taken down");
+  await assert.rejects(assertNotSelf(guarded, 412345, "2001:db8::10"), /ORRERY_SELF_IP \(2001:db8::10\) is not an IPv4 address.*counts as unset/, "a non-IPv4 ORRERY_SELF_IP is treated as unset");
   assert.equal(g.calls.length, before, "refused before any request");
+  // Protected IPv6 entries match inside the server's IPv6 prefix (2001:db8:1a2b::/64).
+  await assert.rejects(assertNotSelf(guarded, 412345, "203.0.113.9", ["2001:db8:1a2b::10"]), /protected IP 2001:db8:1a2b::10/);
+  await assert.rejects(assertNotSelf(guarded, 412345, "203.0.113.9", ["2001:db8:1a2b::/64"]), /protected IP 2001:db8:1a2b::\/64/);
+  await assertNotSelf(guarded, 412345, "203.0.113.9", ["2001:db8:ffff::10", "198.51.100.99"]);
+  assert.equal(protectedIpOf({ ipv4: [], ipv6: ["2001:db8:1a2b::/64"] }, ["2001:db8:1a2c::1"]), null);
   assert.deepEqual(protectedIps({ ORRERY_SELF_IP: " 198.51.100.10 ", ORRERY_PROTECTED_IPS: "198.51.100.20, 198.51.100.10,2001:DB8::1" }), ["198.51.100.10", "198.51.100.20", "2001:db8::1"]);
   assert.deepEqual(protectedIps({}), []);
 }
@@ -111,10 +135,12 @@ assert.deepEqual(redactPasswords({ ok: true, result: { active: true, password: "
   ok: true,
   result: { active: true, password: "[redacted]", nested: [{ rootPassword: "[redacted]", sshPasswordAuthentication: true, Password: null }] },
 });
+// summarize() redacts, so every dedicated tool that returns its result is covered.
+assert.deepEqual(summarize({ status: 200, body: { active: true, password: "rescue-root-secret" } }), { ok: true, status: 200, result: { active: true, password: "[redacted]" } });
 
 // ---------- netcup_api_request, as registered for the admin agent ----------
 {
-  // Server 412345 (198.51.100.20) is the middle server; policy 501 is attached to its interface.
+  // Server 412345 (198.51.100.20) is the Orrery host; policy 501 is attached to its interface.
   const calls = [];
   const fetchImpl = async (url, init = {}) => {
     const method = init.method || "GET";
@@ -128,7 +154,7 @@ assert.deepEqual(redactPasswords({ ok: true, result: { active: true, password: "
     if (/^\/api\/v1\/servers\/41234[56]$/.test(p) && method === "GET") return json(200, fixture(`server-${p.split("/").pop()}.json`));
     if (p === "/api/v1/servers/412347" && method === "GET") return json(200, fixture("servers.json")[2]);
     if (p === "/api/v1/servers/412345/interfaces/aa:bb:cc:00:00:01/firewall") return json(200, fixture("interface-firewall.json"));
-    if (p.endsWith("/rescuesystem") && method === "GET") return json(200, fixture("rescuesystem-active.json"));
+    if (p.endsWith("/rescuesystem") && (method === "GET" || method === "POST")) return json(200, fixture("rescuesystem-active.json"));
     if (p === "/api/v1/tasks") return json(200, [fixture("task-accepted.json")]);
     if (method !== "GET") return json(202, fixture("task-accepted.json"));
     return json(404, fixture("not-found.json"));
@@ -151,16 +177,16 @@ assert.deepEqual(redactPasswords({ ok: true, result: { active: true, password: "
   await assert.rejects(api({ method: "POST", path: "/api/v1/servers/412346/image", body: {} }), /netcup_reinstall/);
   assert.deepEqual(calls, [], "refused before any request");
 
-  // Nothing but reading on the middle server; other servers can be changed.
+  // Nothing but reading on the Orrery host; other servers can be changed.
   for (const [method, p, body] of [["PATCH", "/api/v1/servers/412345", { hostname: "web" }], ["PATCH", "/api/v1/servers/412345", { State: "OFF" }], ["PUT", "/api/v1/servers/412345/interfaces/aa:bb:cc:00:00:01/firewall", { userPolicies: [] }], ["DELETE", "/api/v1/servers/412345/rescuesystem"]]) {
-    await assert.rejects(api({ method, path: p, body }), /middle server/, `${method} ${p}`);
+    await assert.rejects(api({ method, path: p, body }), /Orrery host/, `${method} ${p}`);
   }
   await assert.rejects(api({ method: "PATCH", path: "/api/v1/servers/v2202610123456789012", body: { state: "OFF" } }), /numeric server id/);
-  assert.deepEqual(changes(), [], "nothing was sent to the middle server");
+  assert.deepEqual(changes(), [], "nothing was sent to the Orrery host");
   assert.equal((await api({ method: "PATCH", path: "/api/v1/servers/412346", body: { nickname: "db" } })).accepted, true);
   assert.deepEqual(changes(), ["PATCH /api/v1/servers/412346"]);
 
-  // Firewall policies: one attached to the middle server's interface stays as it is.
+  // Firewall policies: one attached to the Orrery host's interface stays as it is.
   calls.length = 0;
   await assert.rejects(api({ method: "PUT", path: "/api/v1/users/{userId}/firewall-policies/501", body: { rules: [] } }), /policy 501 is attached to server 412345/);
   await assert.rejects(api({ method: "DELETE", path: "/api/v1/users/50123/firewall-policies/501" }), /attached/);
@@ -175,7 +201,7 @@ assert.deepEqual(redactPasswords({ ok: true, result: { active: true, password: "
   await api({ method: "GET", path: "/api/v1/tasks", query: { limit: 1 } });
   assert.equal(calls.at(-1), "GET /api/v1/tasks?limit=1", "query parameters go through query");
 
-  // netcup_query: the same request, GET only, even on the middle server, without method or body.
+  // netcup_query: the same request, GET only, even on the Orrery host, without method or body.
   const query = handlers.netcup_query;
   assert.deepEqual((await query({ path: "/api/v1/servers/412346/rescuesystem" })).result, { active: true, password: "[redacted]" });
   calls.length = 0;
@@ -197,6 +223,25 @@ assert.deepEqual(redactPasswords({ ok: true, result: { active: true, password: "
   const guardedApi = register({ ORRERY_SELF_IP: "203.0.113.250", ORRERY_PROTECTED_IPS: "198.51.100.30" });
   await assert.rejects(guardedApi({ method: "POST", path: "/api/v1/servers/412346/rescuesystem" }), /protected IP 198\.51\.100\.30/);
   await assert.rejects(handlers.netcup_rescue_system({ serverId: 412346, active: true }), /protected IP/);
+
+  // A dedicated tool never returns a password either (summarize redacts).
+  register({ ORRERY_SELF_IP: "203.0.113.250" });
+  assert.deepEqual((await handlers.netcup_rescue_system({ serverId: 412346, active: true })).result, { active: true, password: "[redacted]" });
+
+  // An ORRERY_SELF_IP that is not IPv4 counts as unset: only a plain start goes through.
+  const v6self = register({ ORRERY_SELF_IP: "2001:db8::10" });
+  await assert.rejects(v6self({ method: "PATCH", path: "/api/v1/servers/412346", body: { nickname: "db" } }), /not an IPv4 address/);
+  await assert.rejects(handlers.netcup_set_power({ serverId: 412346, state: "OFF" }), /not an IPv4 address/);
+  assert.equal((await handlers.netcup_set_power({ serverId: 412346, state: "ON" })).accepted, true);
+
+  // A protected IPv6 address inside the Orrery host's prefix also protects its firewall policies.
+  const v6api = register({ ORRERY_SELF_IP: "203.0.113.250", ORRERY_PROTECTED_IPS: "2001:db8:1a2b::5" });
+  await assert.rejects(v6api({ method: "PUT", path: "/api/v1/users/{userId}/firewall-policies/501", body: { rules: [] } }), /policy 501 is attached to server 412345/);
+
+  // env reaches createScp: NETCUP_USER_ID fills {userId}.
+  calls.length = 0;
+  await register({ ORRERY_SELF_IP: "198.51.100.20", NETCUP_USER_ID: "777" })({ method: "GET", path: "/api/v1/users/{userId}/firewall-policies" }).catch(() => {});
+  assert.ok(calls.includes("GET /api/v1/users/777/firewall-policies"), "NETCUP_USER_ID is used");
 }
 
 // ---------- refresh token rotation: callers re-read the file, the session survives ----------

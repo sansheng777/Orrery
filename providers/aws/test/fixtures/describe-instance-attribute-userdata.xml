@@ -1,0 +1,7 @@
+<DescribeInstanceAttributeResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+  <requestId>5f1c2d3e-0000-4000-8000-00000000ab01</requestId>
+  <instanceId>i-0123456789abcdef0</instanceId>
+  <userData>
+    <value>I2Nsb3VkLWNvbmZpZwpwYXNzd29yZDogZXhhbXBsZQo=</value>
+  </userData>
+</DescribeInstanceAttributeResponse>

@@ -50,6 +50,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export function createApi(config, fetchImpl = fetch, { retryWaitMs = 1000 } = {}) {
   async function request(method, pathAndQuery, { body } = {}) {
     if (!METHODS.includes(method)) throw new Error(`Unsupported method ${method}`);
+    if (method === "GET") body = undefined; // a GET carries no body
     const p = normalizePath(pathAndQuery);
     const headers = { authorization: `Bearer ${config.token}`, accept: "application/json" };
     if (body !== undefined) headers["content-type"] = "application/json";
@@ -137,6 +138,7 @@ const SECRET_REQUESTS = [
   ["POST", /^\/object-storage\/keys$/],
   ["POST", /^\/account\/oauth-clients$/],
   ["POST", /^\/account\/oauth-clients\/[^/]+\/reset-secret$/],
+  ["POST", /^\/account\/child-accounts\/[^/]+\/token$/],
   ["GET", /^\/databases\/.+\/credentials$/],
   ["GET", /^\/lke\/clusters\/\d+\/kubeconfig$/],
 ];
@@ -157,16 +159,31 @@ export function guardRequest(method, p, body) {
   }
 }
 
-// ORRERY_SELF_IP (the middle server) plus ORRERY_PROTECTED_IPS (comma list, such as the user's
+// ORRERY_SELF_IP (the Orrery host) plus ORRERY_PROTECTED_IPS (comma list, such as the user's
 // proxy): Linodes a chat may boot but never shut down, reboot, delete, rebuild or change.
 export const protectedIps = (env = process.env) =>
   [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((ip) => String(ip || "").trim().toLowerCase()).filter(Boolean))];
 
+// An address as Linode writes it, without a /prefix (IPv6 SLAAC addresses and ranges carry one).
+const bareIp = (a) => String(a || "").split("/")[0].trim().toLowerCase();
+
 export function assertNotProtected(l, protect) {
-  const ip = (l.ipv4 || []).find((a) => protect.includes(String(a).toLowerCase()));
+  const ip = [...(l.ipv4 || []), ...(l.ipv6 ? [l.ipv6] : [])].map(bareIp).find((a) => a && protect.includes(a));
   if (ip) throw new Error(`Refusing: Linode ${l.id} (${l.label}) has the protected IP ${ip} (ORRERY_SELF_IP or ORRERY_PROTECTED_IPS) and must keep running. Do this in Cloud Manager if you really mean it.`);
   return l;
 }
+
+// Moving or sharing addresses (/networking/ips/assign, /networking/ipv4/share, ...) would take a
+// protected address away from its Linode or hand it to another one.
+export function assertIpsNotProtected(method, p, body, protect) {
+  if (method !== "POST" || !/^\/networking\/(ips|ipv4)\/(assign|share)$/.test(normalizePath(p).split("?")[0])) return;
+  const addresses = [...(Array.isArray(body?.assignments) ? body.assignments.map((a) => a?.address) : []), ...(Array.isArray(body?.ips) ? body.ips : [])];
+  const ip = addresses.map(bareIp).find((a) => a && protect.includes(a));
+  if (ip) throw new Error(`Refusing: ${ip} is a protected IP (ORRERY_SELF_IP or ORRERY_PROTECTED_IPS) and stays where it is. Do this in Cloud Manager if you really mean it.`);
+}
+
+// Linodes a request body names as its target (clone or backup restore target, IP assignments).
+const bodyLinodeIds = (body) => [body?.linode_id, ...(Array.isArray(body?.assignments) ? body.assignments.map((a) => a?.linode_id) : [])].filter((x) => x !== undefined && x !== null);
 
 export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin, env, dataDir, matchHosts }, fetchImpl = fetch) {
   const config = loadConfig(env, dataDir);
@@ -186,8 +203,13 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   if (!admin) return { id, name, configured: true, tools };
   const request = async (method, p, body) => {
     guardRequest(method, p, body);
+    if (method === "GET") body = undefined;
     const target = normalizePath(p).split("?")[0].match(/^\/linode\/instances\/(\d+)(\/.*)?$/);
     if (method !== "GET" && target && target[2] !== "/boot") await notProtected(target[1]);
+    if (method !== "GET" && protect.length) {
+      assertIpsNotProtected(method, p, body, protect);
+      for (const linodeId of bodyLinodeIds(body)) await notProtected(linodeId);
+    }
     return api.request(method, p, { body });
   };
 
@@ -230,7 +252,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   add("linode_api_request", {
     title: "Call any Linode API endpoint",
     description:
-      "Call any Linode API v4 endpoint, e.g. GET /linode/instances/{id}/transfer, GET /linode/types, GET /regions, GET /account/events (progress of boots, creates, rebuilds), POST /linode/instances (create: {\"region\": \"jp-osa\", \"type\": \"g6-nanode-1\", \"image\": \"linode/debian12\", \"label\": \"test-1\", \"root_pass\": \"...\", \"tags\": [\"test\"]}), PUT /linode/instances/{id} (rename, tags), POST /linode/instances/{id}/resize, /networking/firewalls, /domains, /volumes, /account/invoices. Paths are relative to https://api.linode.com/v4 and must be literal (no {placeholders}). Tag short-lived test instances \"test\" so they are easy to find and delete. Deleting and rebuilding a Linode go through linode_delete / linode_rebuild; erasing disks, requests that return secrets and changes to a Linode with a protected IP are refused. Can change or delete anything else in the account.",
+      "Call any Linode API v4 endpoint, e.g. GET /linode/instances/{id}/transfer, GET /linode/types, GET /regions, GET /account/events (progress of boots, creates, rebuilds), POST /linode/instances (create: {\"region\": \"jp-osa\", \"type\": \"g6-nanode-1\", \"image\": \"linode/debian12\", \"label\": \"test-1\", \"root_pass\": \"...\", \"tags\": [\"test\"]}), PUT /linode/instances/{id} (rename, tags), POST /linode/instances/{id}/resize, /networking/firewalls, /domains, /volumes, /account/invoices. Paths are relative to https://api.linode.com/v4 and must be literal (no {placeholders}). Tag short-lived test instances \"test\" so they are easy to find and delete. Deleting and rebuilding a Linode go through linode_delete / linode_rebuild; erasing disks, requests that return secrets, changes to a Linode with a protected IP (including cloning or restoring onto it) and assigning or sharing a protected IP are refused. Can change or delete anything else in the account.",
     inputSchema: {
       method: z.enum(METHODS),
       path: z.string().regex(/^\//, "path starts with /").describe("e.g. /linode/instances/123/transfer"),

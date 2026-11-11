@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig, toServer, servers, TOKEN_URL } from "../index.js";
+import { loadConfig, toServer, servers, accessToken, TOKEN_URL } from "../index.js";
 
 const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const fixture = (f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
@@ -94,6 +94,25 @@ assert.equal(tokenRequests, 1, "the access token is reused until it expires");
 const revoked = async (url) =>
   url === TOKEN_URL ? new Response(JSON.stringify(fixture("token-invalid-grant.json")), { status: 400 }) : assert.fail("no API call without a token");
 await assert.rejects(servers({ configured: true, refreshToken: "revoked", file: null }, { fetchImpl: revoked }), /invalid_grant: Offline user session not found.*login\.js/);
+
+// A token from NETCUP_REFRESH_TOKEN cannot be written back: a rotation is warned about, once.
+{
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(" "));
+  try {
+    let n = 0;
+    const rotating = async () => new Response(JSON.stringify({ access_token: `A${++n}`, expires_in: 300, refresh_token: `env-rotated-${n}` }), { status: 200 });
+    const fromEnv = loadConfig({ NETCUP_REFRESH_TOKEN: "env-only-token" }, tmp);
+    await accessToken(fromEnv, rotating);
+    await accessToken(fromEnv, rotating, true);
+    assert.equal(warnings.length, 1, "warned once, not on every rotation");
+    assert.match(warnings[0], /NETCUP_REFRESH_TOKEN comes from the environment, so the new token is not saved.*login\.js/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { refreshToken: fixture("token.json").refresh_token }, "the file is left alone");
+  } finally {
+    console.warn = warn;
+  }
+}
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("netcup parse test passed");

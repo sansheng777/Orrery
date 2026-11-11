@@ -10,7 +10,7 @@ process.env.ORRERY_DIR = dataDir;
 process.env.ORRERY_SSH_CONFIG = path.join(dataDir, "none");
 const { fromNetcup, fromAws, fromLinode, fromGcp, fromAliyun, fromVultr, fromDigitalocean, fromKamatera, createDiscovery, applyLabel } = await import("../src/discovery.js");
 const { createBootstrapper, installScript, rescueScript, pasteCommand, sshFailure } = await import("../src/bootstrap.js");
-const { addServer } = await import("../src/inventory.js");
+const { addServer, removeServer } = await import("../src/inventory.js");
 
 const PUB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExample orrery";
 
@@ -104,6 +104,17 @@ discovery.invalidate();
 assert.ok(!servers.some((s) => s.id === "netcup:400003"), "a saved server with the same IP replaces the discovered one");
 assert.ok(servers.some((s) => s.id === saved.id && s.port === 2222));
 
+// A saved server that covers the Orrery host (to override its user or port) is still the host.
+{
+  const hostSaved = addServer({ name: "host-override", host: "198.51.100.10", port: 2200, username: "root" });
+  ({ servers } = await discovery.list());
+  const hs = servers.find((s) => s.id === hostSaved.id);
+  assert.ok(hs.self, "it keeps the self flag");
+  assert.deepEqual(hs.tags.filter((x) => x === "orrery-host"), ["orrery-host"], "and the orrery-host tag");
+  assert.equal(servers[0].id, hostSaved.id, "and comes first");
+  removeServer(hostSaved.id);
+}
+
 discovery.remember("ec2:ap-northeast-1:i-012963bba8bfaa551", { username: "ec2-user" });
 assert.equal((await discovery.resolve("ec2:ap-northeast-1:i-012963bba8bfaa551")).username, "ec2-user", "what onboarding learns is kept");
 assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, "discovered.json"), "utf8"))["ec2:ap-northeast-1:i-012963bba8bfaa551"].username, "ec2-user");
@@ -119,11 +130,11 @@ discovery.remember("lightsail:ap-northeast-1:tokyo-1", { ignored: false });
 ({ servers } = await discovery.list());
 assert.ok(servers.some((s) => s.id === "lightsail:ap-northeast-1:tokyo-1"), "and brought back");
 
-// Labels: display name, role tags, note; the middle server is always listed first.
+// Labels: display name, role tags, note; the Orrery host is always listed first.
 discovery.setLabel("netcup:400001", { label: "orrery host" });
 discovery.setLabel("lightsail:ap-northeast-1:tokyo-1", { tags: ["shared"] });
 ({ servers } = await discovery.list());
-assert.equal(servers[0].id, "netcup:400001", "the middle server comes first");
+assert.equal(servers[0].id, "netcup:400001", "the Orrery host comes first");
 assert.equal(servers[0].tags.filter((t) => t === "orrery-host").length, 1, "the Orrery host is tagged once");
 assert.equal(servers[0].name, "orrery host");
 assert.equal(servers[0].originalName, "v22026400001", "the provider's name is kept");
@@ -151,7 +162,7 @@ assert.ok(servers.some((s) => s.source === "netcup"), "one provider failing does
   assert.equal((await flaky.resolve("netcup:400001")).host, "198.51.100.10");
   down = true;
   clock += 61000;
-  assert.equal((await flaky.resolve("netcup:400001")).host, "198.51.100.10", "a netcup outage does not make the middle server unknown");
+  assert.equal((await flaky.resolve("netcup:400001")).host, "198.51.100.10", "a netcup outage does not make the Orrery host unknown");
   ({ servers, errors } = await flaky.list());
   assert.ok(servers.some((s) => s.id === "netcup:400001"), "and it is still listed");
   assert.deepEqual(errors, [{ provider: "netcup", error: "invalid_grant", usingListFrom: new Date(0).toISOString() }]);
@@ -164,12 +175,12 @@ assert.ok(servers.some((s) => s.source === "netcup"), "one provider failing does
   const detailFails = (id) => ({ id, name: `v22026${id}`, nickname: null, hostname: null, state: null, ipv4: [], ipv6: [], error: "netcup GET failed with 502" });
   const netcupPartial = {
     loadConfig: () => ({ configured: true }),
-    servers: async () => ({ servers: [nc(400001, "198.51.100.10"), failing ? detailFails(400002) : nc(400002, "203.0.113.45"), detailFails(864044)] }),
+    servers: async () => ({ servers: [nc(400001, "198.51.100.10"), failing ? detailFails(400002) : nc(400002, "203.0.113.45"), detailFails(400004)] }),
   };
   const d = createDiscovery({ env: { ORRERY_SELF_IP: "198.51.100.10" }, dataDir, providers: { ...providers, netcup: netcupPartial }, now: () => clock });
   ({ servers, errors } = await d.list());
-  assert.ok(!servers.some((s) => s.id === "netcup:864044"), "never seen with an IP: nothing to list");
-  assert.deepEqual(errors, [{ provider: "netcup", server: "netcup:864044", error: "netcup GET failed with 502" }], "but the failure is reported");
+  assert.ok(!servers.some((s) => s.id === "netcup:400004"), "never seen with an IP: nothing to list");
+  assert.deepEqual(errors, [{ provider: "netcup", server: "netcup:400004", error: "netcup GET failed with 502" }], "but the failure is reported");
   failing = true;
   clock += 61000;
   ({ servers, errors } = await d.list());
@@ -353,7 +364,7 @@ const base = { publicKey: () => PUB, keyPath: "/data/keys/id_ed25519", discovery
   assert.ok(!JSON.stringify(b.status()).includes("BEGIN KEY"));
 }
 
-// netcup: never the middle server itself.
+// netcup: never the Orrery host itself.
 {
   const b = createBootstrapper({ ...base, exec: async () => Promise.reject(new Error("auth failed")), netcup: {} });
   const j = await waitJob(b, b.start(middle).id);
@@ -452,11 +463,21 @@ const base = { publicKey: () => PUB, keyPath: "/data/keys/id_ed25519", discovery
   assert.deepEqual(f.sim.log, []);
 }
 
-// netcup: without knowing which machine is the middle server, no netcup machine is rebooted.
+// netcup: a machine in ORRERY_PROTECTED_IPS is never restarted into the rescue system.
+{
+  const f = fakeNetcup();
+  const b = createBootstrapper({ ...base, protectedIps: ["192.0.2.14"], exec: f.exec, netcup: f.netcup });
+  const j = await waitJob(b, b.start(fromNetcup(nc(400004, "192.0.2.14"))).id);
+  assert.equal(j.status, "failed");
+  assert.match(j.error, /protected machine/);
+  assert.deepEqual(f.sim.log, [], "no netcup call at all");
+}
+
+// netcup: without knowing which machine is the Orrery host, no netcup machine is rebooted.
 {
   const f = fakeNetcup();
   const b = createBootstrapper({ ...base, selfIp: null, exec: f.exec, netcup: f.netcup });
-  const j = await waitJob(b, b.start(fromNetcup(nc(864044, "192.0.2.14"))).id);
+  const j = await waitJob(b, b.start(fromNetcup(nc(400004, "192.0.2.14"))).id);
   assert.equal(j.status, "failed");
   assert.match(j.error, /ORRERY_SELF_IP/);
   assert.deepEqual(f.sim.log, [], "no netcup call at all");
@@ -524,7 +545,7 @@ function fakeNetcup({ rootFound = true } = {}) {
 {
   const f = fakeNetcup({ rootFound: false });
   const b = createBootstrapper({ ...base, exec: f.exec, netcup: f.netcup });
-  const j = await waitJob(b, b.start(fromNetcup(nc(864044, "192.0.2.14"))).id);
+  const j = await waitJob(b, b.start(fromNetcup(nc(400004, "192.0.2.14"))).id);
   assert.equal(j.status, "failed");
   assert.match(j.error, /root partition/);
   assert.equal(f.sim.rescue, false, "a failure still switches the rescue system off");

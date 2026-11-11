@@ -148,20 +148,23 @@ async function cpuByInstance(config, region, ids) {
 const REGIONS_TTL_MS = 3600 * 1000;
 const regionCache = new Map(); // accessKeyId -> { at, promise }
 
-// EC2 regions enabled for the account, and the subset where Lightsail exists.
+// EC2 regions enabled for the account (or the configured ones), and the subset where Lightsail exists.
 export async function resolveRegions(config) {
-  if (config.regions !== "all") return { ec2: config.regions, lightsail: new Set(config.regions) };
-  const key = config.credentials.accessKeyId;
+  const key = `${config.credentials.accessKeyId}|${config.regions === "all" ? "all" : config.regions.join(",")}|${!!config.lightsail}`;
   const hit = !config.sdk && regionCache.get(key);
   if (hit && Date.now() - hit.at < REGIONS_TTL_MS) return hit.promise;
   const promise = (async () => {
-    const res = await client(config, ec2.EC2Client, "us-east-1").send(new ec2.DescribeRegionsCommand({}));
-    const enabled = list(res.Regions).map((r) => r.RegionName).filter((r) => REGION.test(r)).sort();
+    let enabled = config.regions;
+    if (enabled === "all") {
+      const res = await client(config, ec2.EC2Client, "us-east-1").send(new ec2.DescribeRegionsCommand({}));
+      enabled = list(res.Regions).map((r) => r.RegionName).filter((r) => REGION.test(r)).sort();
+    }
     let ls = new Set();
     if (config.lightsail) {
       try {
         const lr = await client(config, lightsail.LightsailClient, "us-east-1").send(new lightsail.GetRegionsCommand({}));
-        ls = new Set(list(lr.regions).map((r) => r.name));
+        const where = new Set(list(lr.regions).map((r) => r.name));
+        ls = new Set(enabled.filter((r) => where.has(r)));
       } catch {
         ls = new Set(enabled); // fall back to asking every region
       }
@@ -276,8 +279,11 @@ const SECRET_OPS = {
   lightsail: ["GetInstanceAccessDetails", "DownloadDefaultKeyPair", "CreateKeyPair", "GetRelationalDatabaseMasterUserPassword", "CreateBucketAccessKey", "CreateContainerServiceRegistryLogin"],
 };
 // Members that hold a secret inside otherwise ordinary answers (VPN pre-shared keys, OIDC client secrets,
-// a pending database password, bucket keys): replaced before an aws_call result reaches the chat.
-const SECRET_FIELDS = /^(password|passwordData|masterUserPassword|secretAccessKey|privateKey|privateKeyBase64|certKey|KeyMaterial|PreSharedKey|CustomerGatewayConfiguration|ClientSecret)$/i;
+// a pending database password, bucket keys, user data whose cloud-init often carries passwords and
+// tokens): replaced before an aws_call or aws_query result reaches the chat.
+const SECRET_FIELDS = /^(password|passwordData|masterUserPassword|secretAccessKey|privateKey|privateKeyBase64|certKey|KeyMaterial|PreSharedKey|CustomerGatewayConfiguration|ClientSecret|userData)$/i;
+// The instance console (serial output, screenshot) can show passwords and keys printed at first boot.
+const CONSOLE_OPS = { ec2: ["GetConsoleOutput", "GetConsoleScreenshot"], lightsail: [] };
 // Operations that erase an instance's disk without a name confirmation: left to the AWS console.
 const CONSOLE_ONLY = { ec2: ["CreateReplaceRootVolumeTask"], lightsail: [] };
 const SDK = { ec2: [ec2, ec2.EC2Client], lightsail: [lightsail, lightsail.LightsailClient] };
@@ -291,7 +297,7 @@ export const redactSecrets = (v) =>
       ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, SECRET_FIELDS.test(k) && x != null && x !== "" ? "[redacted]" : redactSecrets(x)]))
       : v;
 
-// ORRERY_SELF_IP (the middle server) plus ORRERY_PROTECTED_IPS (comma list, such as the user's
+// ORRERY_SELF_IP (the Orrery host) plus ORRERY_PROTECTED_IPS (comma list, such as the user's
 // proxy): instances a chat may start but never stop, reboot, terminate, delete or change.
 export const protectedIps = (env = process.env) =>
   [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((ip) => String(ip || "").trim().toLowerCase()).filter(Boolean))];
@@ -324,10 +330,49 @@ async function assertLightsailNotProtected(config, region, instanceName) {
   if (ip) throw refuseProtected(`Lightsail instance ${instanceName}`, ip);
 }
 
+// An Elastic IP named by allocation id, association id or address (AssociateAddress, DisassociateAddress,
+// ReleaseAddress, ...) is looked up: one that is protected, or held by a protected instance, stays put.
+async function assertAddressesNotProtected(config, region, input) {
+  const publicIps = [...list(input.PublicIp), ...list(input.PublicIps), ...list(input.Address)].map(String);
+  const ip = protectedIp(config, publicIps);
+  if (ip) throw refuseProtected(`Elastic IP ${ip}`, ip);
+  const filters = [
+    ["allocation-id", [...list(input.AllocationId), ...list(input.AllocationIds)].map(String).filter((x) => x.startsWith("eipalloc-"))],
+    ["association-id", [...list(input.AssociationId), ...list(input.AssociationIds)].map(String).filter((x) => x.startsWith("eipassoc-"))],
+    ["public-ip", publicIps],
+  ].filter(([, values]) => values.length);
+  for (const [Name, Values] of filters) {
+    const res = await client(config, ec2.EC2Client, region).send(new ec2.DescribeAddressesCommand({ Filters: [{ Name, Values }] }));
+    for (const a of list(res.Addresses)) {
+      const hit = protectedIp(config, [a.PublicIp]);
+      if (hit) throw refuseProtected(`Elastic IP ${a.AllocationId || a.PublicIp}`, hit);
+      if (a.InstanceId) await assertEc2NotProtected(config, region, [a.InstanceId]);
+      if (a.NetworkInterfaceId) await assertEniNotProtected(config, region, [a.NetworkInterfaceId]);
+    }
+  }
+}
+
+// A network interface of a protected instance, or one carrying a protected address, keeps its addresses
+// and security groups (ModifyNetworkInterfaceAttribute, UnassignPrivateIpAddresses, DetachNetworkInterface, ...).
+async function assertEniNotProtected(config, region, ids) {
+  if (!ids.length) return;
+  const res = await client(config, ec2.EC2Client, region).send(new ec2.DescribeNetworkInterfacesCommand({ NetworkInterfaceIds: ids }));
+  for (const n of list(res.NetworkInterfaces)) {
+    const ip = protectedIp(config, [n.Association?.PublicIp, ...list(n.PrivateIpAddresses).map((a) => a.Association?.PublicIp), ...list(n.Ipv6Addresses).map((a) => a.Ipv6Address)]);
+    if (ip) throw refuseProtected(`network interface ${n.NetworkInterfaceId}`, ip);
+    if (n.Attachment?.InstanceId) await assertEc2NotProtected(config, region, [n.Attachment.InstanceId]);
+  }
+}
+
 // aws_call leaves protected instances alone: reading, starting and snapshotting them is all it does.
 async function assertCallAllowed(config, { service, region, operation, input }) {
   if (!config.protectedIps?.length || /^(Get|Describe|Is|List)/.test(operation) || /^(StartInstances?|CreateInstanceSnapshot)$/.test(operation)) return;
-  if (service === "ec2") return assertEc2NotProtected(config, region, [...list(input.InstanceIds), ...list(input.InstanceId)].map(String));
+  if (service === "ec2") {
+    await assertEc2NotProtected(config, region, [...list(input.InstanceIds), ...list(input.InstanceId)].map(String));
+    await assertEniNotProtected(config, region, [...list(input.NetworkInterfaceIds), ...list(input.NetworkInterfaceId)].map(String));
+    await assertAddressesNotProtected(config, region, input);
+    return;
+  }
   // resourceName names an instance in calls such as SetIpAddressType (which can drop its public IPv4);
   // a name that is not an instance comes back NotFound and is let through.
   const names = [...list(input.instanceName), ...list(input.instanceNames), ...(input.resourceName && (!input.resourceType || input.resourceType === "Instance") ? [input.resourceName] : [])];
@@ -359,8 +404,11 @@ export async function ec2Terminate(config, { region, instanceId, confirmName }) 
   const found = list((await c.send(new ec2.DescribeInstancesCommand({ InstanceIds: [instanceId] }))).Reservations).flatMap((r) => list(r.Instances));
   if (!found.length) throw new Error(`Instance ${instanceId} not found in ${region}`);
   const inst = toEc2(found[0], region);
-  const names = [inst.id, inst.name].filter(Boolean);
-  if (!names.includes(String(confirmName || "").trim())) throw new Error(`Refusing: confirmName must be ${names.map((n) => `"${n}"`).join(" or ")}.`);
+  // The Name tag when there is one (an id is easy to copy without looking); the id only for an unnamed instance.
+  const expected = inst.name || inst.id;
+  if (String(confirmName || "").trim() !== expected) {
+    throw new Error(`Refusing: confirmName must be "${expected}" (${inst.name ? "the instance's Name tag" : "the instance id; it has no Name tag"}).`);
+  }
   const ip = protectedIp(config, ec2Ips(found[0]));
   if (ip) throw refuseProtected(`EC2 instance ${instanceId}`, ip);
   return summarizeEc2((await c.send(new ec2.TerminateInstancesCommand({ InstanceIds: [instanceId] }))).TerminatingInstances);
@@ -378,8 +426,11 @@ export async function lightsailPower(config, { region, instanceName, action, for
 }
 
 export async function lightsailDelete(config, { region, instanceName, confirmName }) {
-  if (String(confirmName || "").trim() !== instanceName) throw new Error(`Refusing: confirmName must be "${instanceName}".`);
-  await assertLightsailNotProtected(config, region, instanceName);
+  const { instance } = await client(config, lightsail.LightsailClient, region).send(new lightsail.GetInstanceCommand({ instanceName }));
+  if (!instance?.name) throw new Error(`Lightsail instance ${instanceName} not found in ${region}`);
+  if (String(confirmName || "").trim() !== instance.name) throw new Error(`Refusing: confirmName must be "${instance.name}".`);
+  const ip = protectedIp(config, [instance.publicIpAddress, ...list(instance.ipv6Addresses)]);
+  if (ip) throw refuseProtected(`Lightsail instance ${instance.name}`, ip);
   return summarizeOps((await client(config, lightsail.LightsailClient, region).send(new lightsail.DeleteInstanceCommand({ instanceName }))).operations);
 }
 
@@ -390,6 +441,7 @@ export async function call(config, { service, region, operation, input = {} }) {
   if (!/^[A-Z][A-Za-z0-9]+$/.test(operation)) throw new Error("operation must be an API name such as DescribeInstances");
   if (GUARDED[service].includes(operation)) throw new Error(`Use the dedicated tool for ${operation}; it asks for the instance name first.`);
   if (SECRET_OPS[service].includes(operation)) throw new Error(`${operation} returns a password, secret key or private key, which must not end up in the chat. For key pairs, use ImportKeyPair with your own public key instead.`);
+  if (CONSOLE_OPS[service].includes(operation)) throw new Error(`${operation} returns the instance's console, which can show passwords and keys printed at boot and must not end up in the chat; look at it in the AWS console.`);
   if (CONSOLE_ONLY[service].includes(operation)) throw new Error(`${operation} replaces an instance's root volume and erases its data; do it in the AWS console.`);
   const Command = mod[`${operation}Command`];
   if (typeof Command !== "function") throw new Error(`${service} has no operation ${operation}`);
@@ -458,7 +510,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   }, adminTool("aws_ec2_power", (a) => ec2Power(ctl, a)));
   add("aws_ec2_terminate", {
     title: "Terminate an EC2 instance",
-    description: "Permanently terminate one EC2 instance. confirmName must repeat its instance id or Name tag. Instances with a protected IP are refused.",
+    description: "Permanently terminate one EC2 instance. confirmName must repeat its Name tag (its instance id only when it has no Name tag). Instances with a protected IP are refused.",
     inputSchema: { region: REGION_ARG, instanceId: EC2_ID, confirmName: z.string() },
     annotations: DESTRUCTIVE,
   }, adminTool("aws_ec2_terminate", (a) => ec2Terminate(ctl, a)));
@@ -479,7 +531,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   add("aws_call", {
     title: "Call any EC2 or Lightsail API",
     description:
-      "Run any EC2 or Lightsail API operation through the official AWS SDK, for example ec2 DescribeImages, ec2 RunInstances, ec2 CreateSnapshot, lightsail GetBundles or lightsail CreateInstances. operation is the API name and input its request object as in the AWS API reference. TerminateInstances and DeleteInstance go through their own tools; operations that return passwords or keys, and CreateReplaceRootVolumeTask, are refused, and instances with a protected IP can only be read or started. Can change or delete resources.",
+      "Run any EC2 or Lightsail API operation through the official AWS SDK, for example ec2 DescribeImages, ec2 RunInstances, ec2 CreateSnapshot, lightsail GetBundles or lightsail CreateInstances. operation is the API name and input its request object as in the AWS API reference. TerminateInstances and DeleteInstance go through their own tools; operations that return passwords or keys, GetConsoleOutput, GetConsoleScreenshot and CreateReplaceRootVolumeTask are refused. Instances with a protected IP can only be read, started or snapshotted: changes to them, to their network interfaces, and to Elastic IPs or static IPs that are protected or attached to them are refused. Secrets and user data in answers are redacted. Can change or delete resources.",
     inputSchema: {
       service: z.enum(config.lightsail ? ["ec2", "lightsail"] : ["ec2"]),
       region: REGION_ARG,
@@ -491,7 +543,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   add("aws_query", {
     title: "Read any EC2 or Lightsail API",
     description:
-      "Read-only twin of aws_call: run any EC2 or Lightsail operation whose name starts with Describe, Get or List, for example ec2 DescribeSecurityGroups, ec2 DescribeImages, ec2 DescribeAddresses, lightsail GetInstancePortStates, lightsail GetStaticIps, lightsail GetBundles. Operations that return passwords or keys are refused and secrets in answers are redacted, as in aws_call. Changes nothing.",
+      "Read-only twin of aws_call: run any EC2 or Lightsail operation whose name starts with Describe, Get or List, for example ec2 DescribeSecurityGroups, ec2 DescribeImages, ec2 DescribeAddresses, lightsail GetInstancePortStates, lightsail GetStaticIps, lightsail GetBundles. Operations that return passwords or keys, GetConsoleOutput and GetConsoleScreenshot are refused, and secrets and user data in answers are redacted, as in aws_call. Changes nothing.",
     inputSchema: {
       service: z.enum(config.lightsail ? ["ec2", "lightsail"] : ["ec2"]),
       region: REGION_ARG,

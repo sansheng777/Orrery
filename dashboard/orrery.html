@@ -1,3 +1,20 @@
+<!--
+Orrery dashboard. This is a claude.ai Artifact page: it works only inside claude.ai or the Claude apps,
+which give it access to the Orrery MCP connector.
+
+To publish it (people and AI agents alike): publish this file unchanged with the Artifact tool and declare
+the MCP capability for the connector named "Orrery" (optionally also "host:orrery", a local MCP server
+named orrery in the Claude desktop app) with exactly these tools:
+  list_servers, server_stats, server_pulse, cloud_providers, run_command, container_logs,
+  container_action, add_server, update_server, remove_server, aws_instances, aws_cost, netcup_servers,
+  linode_instances, gcp_instances, vultr_instances, digitalocean_droplets, kamatera_servers,
+  aliyun_instances
+To use another connector name, edit CANDIDATES in the script below.
+
+Cloud views appear only for the providers cloud_providers lists. The terminal and container actions
+(run_command, container_action) are hidden when list_servers returns exec: false.
+The page holds no secrets: credentials stay with the agent.
+-->
 <title>Orrery</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -116,10 +133,10 @@ button.chip:hover { border-color: var(--accent); }
 .hosts-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .label { font: 600 11.5px/1 var(--font-body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .host-list { display: flex; flex-direction: column; gap: 14px; }
-/* One group per vendor (netcup, AWS, Linode, then hosts added by hand): a small heading over its cards. */
+/* One group per vendor (VENDOR_ORDER in the script, then hosts from ~/.ssh/config and hosts added by hand): a small heading over its cards. */
 .host-group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 0 2px; }
-.group-head .label { color: var(--ink); text-transform: none; letter-spacing: .02em; font-size: 12.5px; } /* vendor names keep their own spelling: netcup, AWS, Linode */
+.group-head .label { color: var(--ink); text-transform: none; letter-spacing: .02em; font-size: 12.5px; } /* vendor names keep their own spelling: netcup, AWS, DigitalOcean */
 .group-head .muted { font-size: 12px; }
 .group-head .bad { color: var(--crit); }
 .group-cards { display: flex; flex-direction: column; gap: 6px; }
@@ -185,7 +202,7 @@ button.chip:hover { border-color: var(--accent); }
 .fill { display: block; height: 100%; background: var(--ok); }
 .fill.warn { background: var(--warn); } .fill.crit { background: var(--crit); }
 .spark { width: 100%; height: 34px; display: block; }
-/* Live: the server on screen is read every 3 s (server_pulse); its CPU and memory charts show the last 5 minutes. */
+/* Live: every server is read once a second (server_pulse, PULSE_MS); the CPU and memory charts show the last 5 minutes. */
 .live-badge { display: inline-flex; align-items: center; gap: 5px; color: var(--ok); font-weight: 600; font-size: 12px; }
 .live-badge i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 @media (prefers-reduced-motion: no-preference) { .live-badge i { animation: live-blink 1.6s ease-in-out infinite; } }
@@ -276,9 +293,10 @@ td.r, th.r { text-align: right; white-space: nowrap; }
 .term-out .ip { color: var(--term-ip); }
 .term-out .dim { color: var(--term-dim); }
 .term-out .err { color: var(--term-err); }
-.term-in { display: flex; align-items: baseline; gap: 0; }
+/* A long prompt wraps (phones) and the input moves to the next line instead of off-screen. */
+.term-in { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0; }
 .term-in.busy { display: none; }
-.term-in .prompt { white-space: nowrap; }
+.term-in .prompt { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .term-in input { flex: 1; min-width: 40px; background: transparent; border: 0; outline: 0; color: var(--term-fg); font: inherit; padding: 0 0 0 1ch; caret-color: var(--term-cursor); caret-shape: block; }
 .term-tools { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; font-size: 12.5px; }
 
@@ -402,7 +420,29 @@ td.r, th.r { text-align: right; white-space: nowrap; }
   const LIST_POLL_MS = 30000; // re-read list_servers so machines deleted or created elsewhere show up
   const HISTORY = 60;
   const AUTHZ = new Set(["needs_reauth", "server_not_connected", "blocked_by_policy", "approval_required", "not_in_manifest"]);
-  const INTERACTIVE = /^(sudo\s+)?(vim?|nano|emacs|top|htop|btop|less|more|man|watch|ssh|mysql|psql|redis-cli|python3?|node|irb|tmux|screen)(\s|$)/;
+  // Programs that need a real terminal, which the page cannot give them. Full-screen programs are always
+  // turned away; top only without -b (batch mode); REPLs only when typed bare (python3 script.py, node -v,
+  // psql -c "..." are fine); man unless -k; ssh unless it is given a command to run.
+  const ALWAYS_INTERACTIVE = /^(vim?|nano|emacs|less|more|htop|btop|tmux|screen|watch)$/;
+  const REPL = /^(python3?|node|irb|mysql|psql|redis-cli)$/;
+  const SSH_VALUE_OPTS = /^-[BbcDEeFIiJLlmOoPpQRSWw]$/; // ssh options whose value is the next word
+  function isInteractive(command) {
+    // Only the first command of a pipeline or list counts: top -bn1 | head -20.
+    const [prog, ...args] = command.trim().replace(/^sudo\s+/, "").split(/[|;&]/)[0].trim().split(/\s+/);
+    if (ALWAYS_INTERACTIVE.test(prog)) return true;
+    if (prog === "top") return !args.some((a) => /^-[a-zA-Z]*b/.test(a));
+    if (prog === "man") return !args.some((a) => /^-[a-zA-Z]*k/.test(a) || a === "--apropos");
+    if (REPL.test(prog)) return args.length === 0;
+    if (prog === "ssh") {
+      let words = 0; // the host, then the command
+      for (let i = 0; i < args.length; i++) {
+        if (SSH_VALUE_OPTS.test(args[i])) i++;
+        else if (!args[i].startsWith("-")) words++;
+      }
+      return words < 2;
+    }
+    return false;
+  }
   // Commands that never end on their own. The page cannot stream their output or send Ctrl+C, so a plain
   // ping gets a count, and follow modes are turned away with the form that ends.
   const FOLLOW = [
@@ -517,6 +557,28 @@ td.r, th.r { text-align: right; white-space: nowrap; }
     }, { refetchInterval: POLL_MS, cache: { staleTime: 10000, gcTime: 600000 } });
     watches.set(id, unsub);
   }
+  // Each watchTool is one watch, and the runtime allows about 64 per view (the cloud tools use up to 9).
+  // So only MAX_WATCHED servers get a server_stats watch: the selected one, then the first ones in list
+  // order. The others are read with a plain callTool at most every SLOW_POLL_MS, up to SLOW_POLL_BATCH of
+  // them on each 30 s list refresh (so a large fleet is not read all at once); their live CPU and memory
+  // still come from server_pulse.
+  const MAX_WATCHED = 40;
+  const SLOW_POLL_MS = 120000;
+  const SLOW_POLL_BATCH = 10;
+  function syncWatches() {
+    if (state.mode !== "live") return;
+    const want = new Set([...new Set([state.selected, ...state.servers.map((s) => s.id)])].filter((id) => id != null).slice(0, MAX_WATCHED));
+    for (const [id, unsub] of watches) if (!want.has(id)) { unsub(); watches.delete(id); }
+    let reads = 0;
+    for (const s of state.servers) {
+      if (want.has(s.id)) watchServer(s.id);
+      else if (reads < SLOW_POLL_BATCH && Date.now() - (slot(s.id).polledAt || 0) >= SLOW_POLL_MS) {
+        reads++;
+        slot(s.id).polledAt = Date.now();
+        refreshStats(s.id);
+      }
+    }
+  }
   // Drops the watch and everything else the page keeps for servers that are no longer listed.
   function forgetMissing() {
     const ids = new Set(state.servers.map((s) => s.id));
@@ -537,6 +599,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
   function select(id) {
     if (state.selected !== id) { state.logs = null; state.armed = null; }
     state.selected = id;
+    syncWatches(); // the selected server always has a watch
   }
 
   function slot(id) {
@@ -566,8 +629,8 @@ td.r, th.r { text-align: right; white-space: nowrap; }
     s.error = err;
     render();
   }
-  // Live figures: the agent samples every watched server once a second (server_pulse) and the page asks
-  // for all of them in one call every second. New samples are appended by time; the latest refreshes CPU,
+  // Live figures: the agent samples every listed server once a second (server_pulse) and the page asks
+  // for all of them every second (one call per 50 servers). New samples are appended by time; the latest refreshes CPU,
   // load, memory and swap in place, while containers, disks and the rest stay from the 30 s server_stats.
   function applyPulse(payload, rtt = 0) {
     let changed = false;
@@ -600,7 +663,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
   const isLive = (st) => !!st?.liveSeen && st.live.cpu.length >= 2 && Date.now() - st.liveSeen < 15000;
   const seconds1 = (ms) => `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`;
 
-  // One request for every listed server each second while the page is visible. Not a watchTool: the
+  // One round of requests (50 servers per call) each second while the page is visible. Not a watchTool: the
   // runtime clamps watch polling to about 30 s, too slow for live figures, so the page calls the tool
   // itself (the agent answers from memory in milliseconds). The first call may ask the viewer to allow
   // server_pulse; declined, or other denials, or three failures in a row stop the loop with the reason
@@ -609,7 +672,16 @@ td.r, th.r { text-align: right; white-space: nowrap; }
   let pulseActive = false;
   let pulseBlock = null; // null | { kind: "approval" } | { kind: "denied" | "error", message }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const pulseInput = () => ({ ids: state.servers.map((x) => x.id).sort(), samples: 10 });
+  // The agent takes at most 50 ids per server_pulse call: larger fleets are read in batches of 50, sent
+  // together, and their results merged into one payload.
+  const PULSE_BATCH = 50;
+  async function pulseCall() {
+    const ids = state.servers.map((x) => x.id).sort();
+    const calls = [];
+    for (let i = 0; i < ids.length; i += PULSE_BATCH) calls.push(call("server_pulse", { ids: ids.slice(i, i + PULSE_BATCH), samples: 10 }, { cache: false }));
+    const payloads = await Promise.all(calls);
+    return { collectedAt: payloads[0]?.collectedAt, servers: Object.assign({}, ...payloads.map((p) => p?.servers || {})) };
+  }
   function stopPulse() {
     pulseRun++;
     pulseActive = false;
@@ -630,7 +702,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
       inFlight++;
       const started = Date.now();
       try {
-        const payload = await call("server_pulse", pulseInput(), { cache: false });
+        const payload = await pulseCall();
         if (run !== pulseRun) return;
         fails = 0;
         state.pulseRtt = Date.now() - started;
@@ -689,7 +761,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
       if (state.mode !== "demo") state.mode = "live";
       if (!state.servers.some((s) => s.id === state.selected)) select(state.servers[0]?.id ?? null);
       forgetMissing();
-      if (state.mode === "live") state.servers.forEach((s) => watchServer(s.id));
+      if (state.mode === "live") syncWatches();
       else state.servers.forEach((s) => refreshStats(s.id));
       render();
       loadCloud();
@@ -717,7 +789,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
       state.exec = res.exec !== false;
       if (!servers.some((x) => x.id === state.selected)) select(servers[0]?.id ?? null);
       forgetMissing();
-      servers.forEach((x) => watchServer(x.id));
+      syncWatches();
       render();
     } catch {
       // keep what is shown; the next refresh tries again
@@ -957,7 +1029,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
   }
 
   function miniBar(label, p) {
-    return `<span class="mini"><span>${label} <span class="num">${p == null ? "–" : Math.round(p) + "%"}</span></span><span class="track"><span class="fill ${level(p)}" style="width:${p ?? 0}%"></span></span></span>`;
+    return `<span class="mini"><span>${label} <span class="num">${p == null ? "–" : Math.round(p) + "%"}</span></span><span class="track"><span class="fill ${level(p)}" style="width:${esc(p ?? 0)}%"></span></span></span>`;
   }
 
   function renderHosts() {
@@ -999,8 +1071,10 @@ td.r, th.r { text-align: right; white-space: nowrap; }
 
   // The vendor a host belongs to: its discovery record, else a matched cloud resource, else how it was added.
   const VENDOR = { netcup: "netcup", ec2: "AWS", lightsail: "AWS", linode: "Linode", gcp: "Google Cloud", aliyun: "Alibaba Cloud", vultr: "Vultr", digitalocean: "DigitalOcean", kamatera: "Kamatera" };
-  // Vendors without discovery: a manually added host joins their group through its own tag (add_server tags).
+  // A host added by hand joins a vendor's group through its own tag (add_server tags), e.g. "aliyun".
   const TAG_VENDOR = { aliyun: "Alibaba Cloud" };
+  // Vendor names whose discovery tag is spelled differently (lower case).
+  const TAG_ALIAS = { "google cloud": "gcp", "alibaba cloud": "aliyun" };
   const VENDOR_ORDER = ["netcup", "AWS", "Google Cloud", "Linode", "Vultr", "DigitalOcean", "Kamatera", "Alibaba Cloud"];
   // One group per Google Cloud project. Fill GCP_NAMES to give projects friendly names, e.g.
   // { "my-project-123456": "staging" }; any other project is named by its id without the random digits
@@ -1037,7 +1111,10 @@ td.r, th.r { text-align: right; white-space: nowrap; }
       const roles = s.roleTags || [];
       // The group heading already names the vendor: its own tag is left out of the card.
       const providers = [...new Set(cloudFor(s.id).map((c) => c.provider))].filter((p) => p !== vendor.split(" · ")[0]);
-      const shown = new Set([...roles, ...providers, vendor, vendor.split(" · ")[0]].map((t) => String(t).toLowerCase())); // discovery also tags "netcup", "aws", "linode"
+      // Discovery also tags hosts with the provider id ("netcup", "aws", "gcp", "aliyun", ...): the ids that
+      // differ from the vendor name are added so those tags are not shown twice.
+      const names = [...roles, ...providers, vendor, vendor.split(" · ")[0]].map((t) => String(t).toLowerCase());
+      const shown = new Set([...names, ...names.map((t) => TAG_ALIAS[t]).filter(Boolean)]);
       const tags = roles.map((t) => `<span class="tag role">${esc(t)}</span>`).join("")
         + providers.map((p) => `<span class="tag">${esc(p)}</span>`).join("")
         + (s.tags || []).filter((t) => !shown.has(String(t).toLowerCase()) && !(s.self && t === "orrery-host"))
@@ -1045,7 +1122,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
       return `<button class="host${s.self ? " self" : ""}" type="button" data-host="${esc(s.id)}" aria-current="${s.id === state.selected}">
         <span class="dot ${dot}" title="${dot === "pending" ? "Loading" : ""}"></span>
         <span class="host-title"><span class="host-name">${esc(s.name)}</span>${s.self ? `<span class="core-badge">Orrery host</span>` : ""}</span>
-        <span class="host-addr">${esc(s.username)}@${esc(s.host)}${s.port && s.port !== 22 ? ":" + s.port : ""}</span>
+        <span class="host-addr">${esc(s.username)}@${esc(s.host)}${s.port && s.port !== 22 ? ":" + esc(s.port) : ""}</span>
         ${d ? `<span class="host-mini${st.error ? " stale" : ""}" title="${st.error ? "Last successful reading" : ""}">${miniBar("CPU", d.cpu.percent)}${miniBar("Mem", d.memory.percent)}${miniBar("Disk", d.disk?.percent)}</span>` : ""}
         ${st.error ? `<span class="host-addr" style="color:var(--crit)">${esc(st.needsApproval ? "Needs approval" : "Unreachable")}</span>` : ""}
         ${tags ? `<span class="tagline">${tags}</span>` : ""}
@@ -1180,7 +1257,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
         <td><span class="mono">${esc(v.plan || "–")}</span><div class="cimg">${esc(v.os || "")}</div></td>
         <td class="mono muted">${esc(v.region || "–")}</td>
         <td><span class="mono">${copyable(v.ipv4)}</span><div class="cimg">${copyable(v.ipv6, "")}</div></td>
-        <td class="num">${v.vcpus ?? "–"} vCPU · ${mib(v.memoryMB)}<div class="cimg">Disk ${v.diskGB ?? "–"} GB</div></td>
+        <td class="num">${esc(v.vcpus ?? "–")} vCPU · ${mib(v.memoryMB)}<div class="cimg">Disk ${esc(v.diskGB ?? "–")} GB</div></td>
         <td class="num muted">${day(v.created)}</td>
         <td>${hostLink(ownerOf("vultr", v))}</td>
       </tr>`;
@@ -1195,7 +1272,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
         <td><span class="mono">${esc(o.size || "–")}</span><div class="cimg">${esc(o.image || "")}</div></td>
         <td class="mono muted">${esc(o.region || "–")}</td>
         <td><span class="mono">${copyable((o.ipv4 || [])[0])}</span><div class="cimg">${copyable((o.privateIpv4 || [])[0], "")}</div></td>
-        <td class="num">${o.vcpus ?? "–"} vCPU · ${mib(o.memoryMB)}<div class="cimg">Disk ${o.diskGB ?? "–"} GB</div></td>
+        <td class="num">${esc(o.vcpus ?? "–")} vCPU · ${mib(o.memoryMB)}<div class="cimg">Disk ${esc(o.diskGB ?? "–")} GB</div></td>
         <td class="num muted">${day(o.created)}</td>
         <td>${hostLink(ownerOf("digitalocean", o))}</td>
       </tr>`);
@@ -1208,8 +1285,8 @@ td.r, th.r { text-align: right; white-space: nowrap; }
         <td><div class="cname">${esc(k.name)}</div><div class="cimg">${esc(k.id)}</div></td>
         <td class="mono muted">${esc(k.datacenter || "–")}</td>
         <td><span class="mono">${copyable(k.ipv4)}</span><div class="cimg">${copyable((k.privateIps || [])[0], "")}</div></td>
-        <td class="num">${esc(k.cpu || "–")} · ${mib(k.ramMB)}<div class="cimg">Disk ${(k.diskSizesGB || []).join(" + ") || "–"} GB</div></td>
-        <td>${k.billing === "monthly" ? "Monthly" : k.billing === "hourly" ? "Hourly" : esc(k.billing || "–")}<div class="cimg">${k.priceMonthlyOn != null ? `$${k.priceMonthlyOn}/mo` : ""}</div></td>
+        <td class="num">${esc(k.cpu || "–")} · ${mib(k.ramMB)}<div class="cimg">Disk ${esc((k.diskSizesGB || []).join(" + ") || "–")} GB</div></td>
+        <td>${k.billing === "monthly" ? "Monthly" : k.billing === "hourly" ? "Hourly" : esc(k.billing || "–")}<div class="cimg">${k.priceMonthlyOn != null ? `$${esc(k.priceMonthlyOn)}/mo` : ""}</div></td>
         <td>${hostLink(ownerOf("kamatera", k))}</td>
       </tr>`);
     return listErrors(d.servers, "name", "servers") + table(["Status", "Server", "Data center", "Public / private IP", "Specs", "Billing", "SSH host"], rows, "No servers in this Kamatera account yet.");
@@ -1222,7 +1299,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
         <td><span class="mono">${esc(a.type || "–")}</span><div class="cimg">${esc(a.os || "")}</div></td>
         <td class="mono muted">${esc(a.zone || a.region)}</td>
         <td><span class="mono">${copyable(a.publicIp)}</span><div class="cimg">${copyable(a.privateIp, "")}</div></td>
-        <td class="num">${a.cpu ?? "–"} vCPU · ${mib(a.memoryMiB)}<div class="cimg">Out ${a.bandwidthOutMbps ?? "–"} Mbps</div></td>
+        <td class="num">${esc(a.cpu ?? "–")} vCPU · ${mib(a.memoryMiB)}<div class="cimg">Out ${esc(a.bandwidthOutMbps ?? "–")} Mbps</div></td>
         <td>${a.chargeType === "PrePaid" ? `Subscription<div class="cimg">expires ${day(a.expires)}</div>` : "Pay as you go"}</td>
         <td>${hostLink(ownerOf("aliyun", a))}</td>
       </tr>`);
@@ -1238,7 +1315,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
         <td><span class="mono">${esc(l.type || "–")}</span><div class="cimg">${esc(l.image || "")}</div></td>
         <td class="mono muted">${esc(l.region || "–")}</td>
         <td><span class="mono">${copyable(publicV4(l))}</span></td>
-        <td class="num">${l.vcpus ?? "–"} vCPU · ${mib(l.memoryMB)}</td>
+        <td class="num">${esc(l.vcpus ?? "–")} vCPU · ${mib(l.memoryMB)}</td>
         <td class="num muted">${day(l.created)}</td>
         <td>${hostLink(ownerOf("linode", l))}</td>
       </tr>`).join("");
@@ -1294,7 +1371,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
         <td>${n.disabled ? `<span class="pill">Disabled</span>` : pill(NETCUP_STATE, n.state)}</td>
         <td><div class="cname">${esc(n.nickname || n.name)}</div><div class="cimg">${esc(n.nickname ? n.name : n.hostname || "")}</div></td>
         <td>${esc(n.product || "–")}<div class="cimg">${esc(n.site || "")}</div></td>
-        <td class="num">${n.cpuCount == null ? "–" : n.cpuCount + " vCPU"} · ${mib(n.memoryMiB)}${n.diskMiB ? `<div class="cimg">Disk ${mib(n.diskMiB)}</div>` : ""}</td>
+        <td class="num">${n.cpuCount == null ? "–" : esc(n.cpuCount) + " vCPU"} · ${mib(n.memoryMiB)}${n.diskMiB ? `<div class="cimg">Disk ${mib(n.diskMiB)}</div>` : ""}</td>
         <td><span class="mono">${copyable(n.ipv4[0])}</span>${n.ipv4.length > 1 ? ` <span class="muted">+${n.ipv4.length - 1}</span>` : ""}<div class="cimg">${copyable(n.ipv6[0], "")}</div></td>
         <td class="num muted">${n.state === "RUNNING" ? uptime(n.uptimeSec) : "–"}</td>
         <td>${hostLink(ownerOf("netcup", n))}${n.error ? `<div class="cimg" style="color:var(--crit)">${esc(n.error)}</div>` : ""}</td>
@@ -1311,9 +1388,11 @@ td.r, th.r { text-align: right; white-space: nowrap; }
       <h3 class="label" style="margin-top:18px">Option 1: on a server (recommended; works on the web and in the mobile apps)</h3>
       <ol>
         <li>Deploy Orrery as described in <code>docs/deploy.md</code>: a Cloudflare Tunnel routes <code>&lt;your-host&gt;</code> to <code>http://orrery:8787</code>, and a WAF rule lets in only Anthropic's 160.79.104.0/21. The server needs no open inbound ports.</li>
-        <li>On that server, start the connector and read its token (it is never printed to the logs):
+        <li>On that server, as root, start the connector and read its token (it is never printed to the logs):
           <pre>cd orrery/deploy
-docker compose up -d
+mkdir -p data &amp;&amp; chown 1000:1000 data &amp;&amp; chmod 700 data
+echo "TUNNEL_TOKEN=&lt;your Cloudflare tunnel token&gt;" &gt; .env &amp;&amp; chmod 600 .env
+bash enable-ssh.sh
 cat data/token</pre></li>
         <li>In claude.ai, open Settings → Connectors → Add custom connector. Name it <code>Orrery</code> (the page looks the connector up by this name) and set the URL to <code>https://&lt;your-host&gt;/mcp/&lt;token&gt;</code>.</li>
         <li>Come back to this page, click Reconnect, and choose Allow on the first call.</li>
@@ -1353,7 +1432,12 @@ cat data/token</pre></li>
         else $("pane").innerHTML = `<div id="termNotice"></div><div class="notice"><p>This agent runs read-only (ORRERY_ALLOW_EXEC=0), so the terminal and container start/stop are turned off. To use them, set it to 1 and restart the agent.</p></div>`;
       }
     }
-    $("head").innerHTML = headHtml(s, st, d);
+    // Live figures re-render every second: the header and pane are rewritten only when their HTML changed,
+    // so text in them (logs, addresses) can be selected. The cache lives on the element, so a remount
+    // (new elements above) starts empty.
+    const head = $("head");
+    const headNow = headHtml(s, st, d);
+    if (head.__html !== headNow) { head.innerHTML = headNow; head.__html = headNow; }
     if (headOnly) return;
     const containers = d?.docker?.containers?.length ?? 0;
     $("tabs").innerHTML = `
@@ -1367,10 +1451,14 @@ cat data/token</pre></li>
       ? (d ? overview(d, st) : st.error ? "" : `<div class="empty">Reading ${esc(s.host)} over SSH…</div>`)
       : (d ? dockerPane(d) : st.error ? "" : `<div class="empty">Loading containers…</div>`);
     // Stats of any server re-render the pane: the open log keeps its scroll position.
-    const log = $("pane").querySelector(".logs pre");
+    const pane = $("pane");
+    const paneNow = notice + body;
+    if (pane.__html === paneNow) return;
+    const log = pane.querySelector(".logs pre");
     const kept = log && { container: log.dataset.log, top: log.scrollTop };
-    $("pane").innerHTML = notice + body;
-    const again = kept && $("pane").querySelector(".logs pre");
+    pane.innerHTML = paneNow;
+    pane.__html = paneNow;
+    const again = kept && pane.querySelector(".logs pre");
     if (again && again.dataset.log === kept.container) again.scrollTop = kept.top;
   }
 
@@ -1378,15 +1466,15 @@ cat data/token</pre></li>
     const facts = d ? [
       `<span class="chip">${esc(d.os)}</span>`,
       `<span class="chip">Up ${uptime(d.uptimeSec)}</span>`,
-      `<span class="chip">Latency <span class="num">${d.latencyMs ?? "–"}</span> ms</span>`,
+      `<span class="chip">Latency <span class="num">${esc(d.latencyMs ?? "–")}</span> ms</span>`,
       d.rebootRequired ? `<span class="chip warn">Reboot required</span>` : "",
-      d.updatesAvailable ? `<span class="chip warn"><span class="num">${d.updatesAvailable}</span> updates available</span>` : "",
+      d.updatesAvailable ? `<span class="chip warn"><span class="num">${esc(d.updatesAvailable)}</span> updates available</span>` : "",
     ].join("") : "";
     const cloudFacts = cloudFor(s.id).map((c) => `<button class="chip ${c.level}" type="button" data-view="cloud" title="View in the clouds view">${esc(c.text)}</button>`).join("");
     return `
       <div style="min-width:0">
         <h1>${esc(s.name)}${s.self ? ` <span class="core-badge">Orrery host</span>` : ""}</h1>
-        <div class="sub">${esc(s.username)}@${copyable(s.host)}:${s.port || 22}${d ? " · " + esc(d.hostname) : ""}${s.originalName && s.originalName !== d?.hostname ? ` · <span class="orig">${esc(s.originalName)}</span>` : ""}</div>
+        <div class="sub">${esc(s.username)}@${copyable(s.host)}:${esc(s.port || 22)}${d ? " · " + esc(d.hostname) : ""}${s.originalName && s.originalName !== d?.hostname ? ` · <span class="orig">${esc(s.originalName)}</span>` : ""}</div>
         <div class="facts">${(s.roleTags || []).map((t) => `<span class="tag role">${esc(t)}</span>`).join("")}${facts}${cloudFacts}</div>
         ${s.self ? `<p class="core-note">Orrery runs on this server, so all monitoring and management goes through it. Don't shut it down, reboot it or change its firewall. Orrery refuses to power it off, reboot it, boot it into a rescue system or reinstall it from a chat; do that in your provider's own control panel.</p>` : ""}
         ${s.note ? `<p class="muted" style="margin:8px 0 0">${esc(s.note)}</p>` : ""}
@@ -1462,7 +1550,7 @@ cat data/token</pre></li>
   // The viewer's click: callTool may ask for approval; once allowed, the per-second loop starts again.
   async function allowPulse() {
     try {
-      const p = await call("server_pulse", pulseInput(), { cache: false });
+      const p = await pulseCall();
       pulseBlock = null;
       applyPulse(p);
     } catch (e) {
@@ -1496,12 +1584,12 @@ cat data/token</pre></li>
     const hist = live ? st.live : st.history;
     const tag = live ? `<span class="live-badge" title="Sampled every second; the chart shows the last 5 minutes"><i></i>Live</span>` : "";
 
-    const disks = (d.disks || []).map((k) => `<tr><td class="mono">${esc(k.mount)}</td><td class="mono muted">${esc(k.fs)}</td><td class="r num">${bytes(k.used)}</td><td class="r num">${bytes(k.total)}</td><td class="r"><span class="pill ${level(k.percent, 80, 92)} num">${k.percent}%</span></td></tr>`).join("");
+    const disks = (d.disks || []).map((k) => `<tr><td class="mono">${esc(k.mount)}</td><td class="mono muted">${esc(k.fs)}</td><td class="r num">${bytes(k.used)}</td><td class="r num">${bytes(k.total)}</td><td class="r"><span class="pill ${level(k.percent, 80, 92)} num">${esc(k.percent)}%</span></td></tr>`).join("");
     const ips = (d.ips || []).map((ip) => `<span class="mono">${copyable(ip)}</span>`).join("<br>")
-      + (d.bridgeNetworks ? `<br><span class="muted" title="Gateway addresses of virtual bridges such as docker0 / br-…, used only inside this machine and not reachable from outside">plus ${d.bridgeNetworks} internal Docker networks</span>` : "");
+      + (d.bridgeNetworks ? `<br><span class="muted" title="Gateway addresses of virtual bridges such as docker0 / br-…, used only inside this machine and not reachable from outside">plus ${esc(d.bridgeNetworks)} internal Docker networks</span>` : "");
     return `
       <div class="meters">
-        ${meter(`CPU${tag}`, d.cpu.percent, `${d.cpu.cores ?? "?"} cores · load ${d.load.m1} / ${d.load.m5} / ${d.load.m15}`, hist.cpu)}
+        ${meter(`CPU${tag}`, d.cpu.percent, `${esc(d.cpu.cores ?? "?")} cores · load ${esc(d.load.m1)} / ${esc(d.load.m5)} / ${esc(d.load.m15)}`, hist.cpu)}
         ${meter(`Memory${tag}`, d.memory.percent, `${bytes(d.memory.used)} / ${bytes(d.memory.total)}`, hist.mem)}
         ${meter("Disk /", d.disk?.percent, d.disk ? `${bytes(d.disk.used)} / ${bytes(d.disk.total)}` : "–")}
         ${meter("Swap", d.swap.total ? d.swap.percent : null, d.swap.total ? `${bytes(d.swap.used)} / ${bytes(d.swap.total)}` : "Off")}
@@ -1512,15 +1600,15 @@ cat data/token</pre></li>
           <dt>Hostname</dt><dd class="mono">${esc(d.hostname)}</dd>
           <dt>Kernel</dt><dd class="mono">${esc(d.kernel)}</dd>
           <dt>CPU</dt><dd>${esc(d.cpu.model || "–")}</dd>
-          <dt>Processes</dt><dd class="num">${d.processes}</dd>
-          <dt>Users logged in</dt><dd class="num">${d.usersLoggedIn}</dd>
+          <dt>Processes</dt><dd class="num">${esc(d.processes)}</dd>
+          <dt>Users logged in</dt><dd class="num">${esc(d.usersLoggedIn)}</dd>
           <dt>Last login</dt><dd class="mono" style="font-size:12.5px">${esc(d.lastLogin || "–")}</dd>
         </dl></div>
         <div class="kv"><h3 class="label">Network</h3><dl>
           <dt>IP addresses</dt><dd>${ips || "–"}</dd>
           <dt>Received</dt><dd class="num">${bytes(d.network.rxBytes)}</dd>
           <dt>Sent</dt><dd class="num">${bytes(d.network.txBytes)}</dd>
-          <dt>Docker</dt><dd>${dockerStatusText(d.docker)}</dd>
+          <dt>Docker</dt><dd>${esc(dockerStatusText(d.docker))}</dd>
         </dl></div>
       </div>
       ${disks ? `<div class="kv" style="margin-top:12px"><h3 class="label">Disks</h3><div class="table-wrap"><table>
@@ -1540,6 +1628,8 @@ cat data/token</pre></li>
     const dk = d.docker;
     if (dk.status !== "ok") return `<div class="notice"><p>Docker: ${esc(dockerStatusText(dk))}</p></div>`;
     if (!dk.containers.length) return `<div class="empty">No containers on this server yet.</div>`;
+    // On the Orrery host, stopping or restarting a container can cut off the connector itself.
+    const self = !!state.servers.find((x) => x.id === state.selected)?.self;
     const rows = dk.containers.map((c) => {
       const running = c.state === "running";
       const pill = running ? "ok" : c.state === "restarting" || c.state === "paused" ? "warn" : c.state === "exited" && !/\(0\)/.test(c.status) ? "crit" : "";
@@ -1557,13 +1647,14 @@ cat data/token</pre></li>
         <td class="mono muted" style="font-size:12px;max-width:220px;overflow-wrap:anywhere">${esc(c.ports || "")}</td>
         <td><div class="row-actions">
           <button class="btn sm" type="button" data-cact="logs" data-c="${esc(c.name)}">Logs</button>
-          ${!state.exec ? "" : running ? act("restart", "Restart", "danger") + act("stop", "Stop", "danger") : act("start", "Start")}
+          ${!state.exec ? "" : running ? (self ? "" : act("restart", "Restart", "danger") + act("stop", "Stop", "danger")) : act("start", "Start")}
         </div></td>
       </tr>`;
     }).join("");
     const logs = state.logs && state.logs.server === state.selected
       ? `<div class="logs"><div class="term-tools"><span class="label">Logs · ${esc(state.logs.container)} (last 200 lines)</span><button class="btn sm" type="button" data-act="closelogs">Close</button></div><pre data-log="${esc(state.logs.container)}">${esc(state.logs.text)}</pre></div>` : "";
-    return `<div class="table-wrap"><table>
+    const selfNote = self && state.exec ? `<p class="muted" style="margin:0 0 10px;font-size:12.5px">Orrery runs on this host, so its containers can't be stopped or restarted from here (that could cut off the connector). Manage them on the host itself, e.g. with docker compose in deploy/.</p>` : "";
+    return `${selfNote}<div class="table-wrap"><table>
       <thead><tr><th>State</th><th>Container</th><th>Status</th><th class="r">CPU</th><th class="r">Memory</th><th>Ports</th><th class="r">Actions</th></tr></thead>
       <tbody>${rows}</tbody></table></div>${logs}`;
   }
@@ -1606,7 +1697,7 @@ cat data/token</pre></li>
     const p = promptParts(id);
     const [cls, text] = st.error ? ["bad", "Disconnected"] : st.data ? ["ok", "Connected"] : ["", "Connecting"];
     return `<span class="st-conn ${cls}"><i></i>${text}</span>
-      <span>${esc(s?.username)}@${esc(s?.host)}:${s?.port || 22}</span>
+      <span>${esc(s?.username)}@${esc(s?.host)}:${esc(s?.port || 22)}</span>
       <span class="st-cwd">${esc(p.cwd)}</span>
       ${st.data?.latencyMs != null ? `<span class="st-lat">${st.data.latencyMs} ms</span>` : ""}
       <span class="st-keys" title="Commands run non-interactively, each on its own, for up to 60 s; the directory you cd into is remembered. Instead of full-screen programs such as vim or top, use top -bn1, cat and the like; ping sends only 4 packets.">Non-interactive · ↑↓ history · Ctrl+C stop · Ctrl+L clear</span>`;
@@ -1725,7 +1816,7 @@ cat data/token</pre></li>
     if (command.trim() === "clear") { t.html = []; const out = form?.parentElement.querySelector(".term-out"); if (out) out.innerHTML = ""; return; }
     const n = ++blockSeq;
     const plan = tame(command);
-    if (INTERACTIVE.test(command.trim()) || plan.refuse) {
+    if (isInteractive(command) || plan.refuse) {
       const why = plan.refuse || "This is an interactive program, which the web terminal can't run. Try a non-interactive form instead, e.g. top -bn1 | head -20.";
       print(id, blockHtml(n, head, { meta: `<span class="bad">✗ not run</span>`, fail: true, body: `<span class="err">${esc(why)}</span>` }));
       return;

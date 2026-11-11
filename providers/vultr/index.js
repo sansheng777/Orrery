@@ -48,9 +48,12 @@ const MAX_RETRY_WAIT_MS = 10000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function createApi(config, fetchImpl = fetch, { retryWaitMs = 1000 } = {}) {
-  async function request(method, pathAndQuery, { body } = {}) {
+  // query: extra parameters encoded here, after the path check (a pagination cursor is base64 and may end in
+  // "=" padding, which encodeURIComponent turns into a "%" a literal path may not carry).
+  async function request(method, pathAndQuery, { body, query } = {}) {
     if (!METHODS.includes(method)) throw new Error(`Unsupported method ${method}`);
-    const p = normalizePath(pathAndQuery);
+    let p = normalizePath(pathAndQuery);
+    if (query) p += (p.includes("?") ? "&" : "?") + new URLSearchParams(query).toString();
     const headers = { authorization: `Bearer ${config.apiKey}`, accept: "application/json" };
     if (body !== undefined) headers["content-type"] = "application/json";
     // GETs are retried once on rate limiting (429) or a 5xx; a change is never sent twice.
@@ -84,7 +87,7 @@ export function createApi(config, fetchImpl = fetch, { retryWaitMs = 1000 } = {}
     const out = [];
     let cursor = "";
     for (let page = 0; page < maxPages; page++) {
-      const body = await request("GET", `${base}${base.includes("?") ? "&" : "?"}per_page=${PER_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      const body = await request("GET", `${base}${base.includes("?") ? "&" : "?"}per_page=${PER_PAGE}`, { query: cursor ? { cursor } : undefined });
       out.push(...(body[key] || []));
       cursor = body.meta?.links?.next || "";
       if (!cursor) break;
@@ -150,24 +153,30 @@ const SECRET_REQUESTS = [
   ["POST", /^\/inference\/[^/]+\/apikey$/],
 ];
 // Members that hold a secret inside otherwise ordinary answers: a new instance's root password, user and
-// inference API keys, Object Storage keys, database passwords, a kubeconfig, and an instance's `kvm` web console
-// URL (its token opens the screen and keyboard without the Vultr login: a Ctrl+Alt+Del and a boot-menu edit away from root).
-const SECRET_FIELDS = /^(kvm|default_password|password|api_key|s3_access_key|s3_secret_key|secret|secret_key|private_key|kube_config|kubeconfig|token)$/i;
+// inference API keys, Object Storage keys, database passwords and access keys, a kubeconfig, and an instance's
+// `kvm` web console URL (its token opens the screen and keyboard without the Vultr login: a Ctrl+Alt+Del and a
+// boot-menu edit away from root). Any string holding a private key is redacted wherever it is.
+const SECRET_FIELDS = /^(kvm|default_password|password|api_key|access_key|s3_access_key|s3_secret_key|secret|secret_key|private_key|kube_config|kubeconfig|token)$/i;
 
 export const redactSecrets = (v) =>
   Array.isArray(v)
     ? v.map(redactSecrets)
-    : v && Object.getPrototypeOf(v) === Object.prototype
-      ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, SECRET_FIELDS.test(k) && x != null && x !== "" ? "[redacted]" : redactSecrets(x)]))
-      : v;
+    : typeof v === "string"
+      ? (/PRIVATE KEY-----/.test(v) ? "[redacted]" : v)
+      : v && Object.getPrototypeOf(v) === Object.prototype
+        ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, SECRET_FIELDS.test(k) && x != null && x !== "" ? "[redacted]" : redactSecrets(x)]))
+        : v;
 
-// Requests the generic tool refuses: deleting or reinstalling an instance goes through the tools that ask for
-// its label; restoring over it and erasing a bare-metal server are left to the website, and so are
-// answers that carry a key.
-export function guardRequest(method, p) {
+// Requests the generic tool refuses: deleting or reinstalling an instance (also by PATCH with a new os_id,
+// app_id or image_id) goes through the tools that ask for its label; restoring over it and erasing a
+// bare-metal server are left to the website, and so are answers that carry a key.
+export function guardRequest(method, p, body) {
   const bare = normalizePath(p).split("?")[0];
   if (method === "DELETE" && /^\/instances\/[^/]+$/.test(bare)) throw new Error("Deleting an instance goes through vultr_delete, which asks for its label.");
   if (method === "POST" && /^\/instances\/[^/]+\/reinstall$/.test(bare)) throw new Error("Reinstalling an instance goes through vultr_reinstall, which asks for its label.");
+  if (method === "PATCH" && /^\/instances\/[^/]+$/.test(bare) && body && ["os_id", "app_id", "image_id"].some((k) => body[k] != null && body[k] !== "")) {
+    throw new Error("Changing an instance's os_id, app_id or image_id reinstalls it and erases its disk; use vultr_reinstall (osId, appId or imageId), which asks for its label.");
+  }
   if (method === "POST" && /^\/(instances|bare-metals)\/[^/]+\/restore$/.test(bare)) throw new Error("Restoring a snapshot or backup overwrites the server's disk; do it in the Vultr website.");
   if ((method === "DELETE" && /^\/bare-metals\/[^/]+$/.test(bare)) || (method === "POST" && /^\/bare-metals\/[^/]+\/reinstall$/.test(bare))) {
     throw new Error("Deleting or reinstalling a bare-metal server erases it; do it in the Vultr website.");
@@ -177,8 +186,8 @@ export function guardRequest(method, p) {
   }
 }
 
-// ORRERY_SELF_IP (the middle server) plus ORRERY_PROTECTED_IPS (comma list, such as the user's
-// proxy): instances a chat may start but never halt, reboot, delete, reinstall or change.
+// ORRERY_SELF_IP (the Orrery host) plus ORRERY_PROTECTED_IPS (comma list of other machines that must
+// stay up): instances a chat may start but never halt, reboot, delete, reinstall or change.
 export const protectedIps = (env = process.env) =>
   [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((a) => String(a || "").trim().toLowerCase()).filter(Boolean))];
 
@@ -188,13 +197,17 @@ export function assertNotProtected(i, protect) {
   return i;
 }
 
-// Instance ids a request names: /instances/<id>/..., or instance_ids of the bulk start / halt / reboot calls.
+// Instance ids a change names: /instances/<id>/..., and instance_id / instance_ids in the body (bulk halt and
+// reboot, block storage and reserved IP attach, VPC and firewall membership...). Bulk start names none.
 export function instanceIdsIn(method, p, body) {
   const bare = normalizePath(p).split("?")[0];
+  if (method === "POST" && bare === "/instances/start") return { ids: [], rest: "" };
+  // A snapshot only reads the instance, so it is allowed on protected machines too (as on the other providers).
+  if (method === "POST" && bare === "/snapshots") return { ids: [], rest: "" };
+  const named = body && typeof body === "object" ? [body.instance_id, ...[].concat(body.instance_ids ?? [])].filter((x) => x != null && x !== "").map(String) : [];
   const one = bare.match(/^\/instances\/([^/]+)(\/.*)?$/);
-  if (one && !(["start", "halt", "reboot"].includes(one[1]) && !one[2])) return { ids: [one[1]], rest: one[2] || "" };
-  if (method === "POST" && /^\/instances\/(halt|reboot)$/.test(bare)) return { ids: [].concat(body?.instance_ids || []).map(String), rest: "" };
-  return { ids: [], rest: "" };
+  if (one && !(["start", "halt", "reboot"].includes(one[1]) && !one[2])) return { ids: [...new Set([one[1], ...named])], rest: one[2] || "" };
+  return { ids: [...new Set(named)], rest: "" };
 }
 
 export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin, env, dataDir, matchHosts }, fetchImpl = fetch) {
@@ -214,10 +227,21 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   }, tool(() => instances(api, { matchHosts })));
   if (!admin) return { id, name, configured: true, tools };
   const request = async (method, p, body) => {
-    guardRequest(method, p);
+    guardRequest(method, p, body);
     if (method !== "GET") {
       const { ids, rest } = instanceIdsIn(method, p, body);
       if (ids.length && rest !== "/start") await notProtected(ids);
+      // Requests that name only the attached resource: detaching (or deleting) block storage reboots the
+      // instance it is attached to unless live, and detaching (or deleting) a reserved IP takes its address away.
+      const bare = normalizePath(p).split("?")[0];
+      const res = protect.length && ((method === "POST" && bare.match(/^\/(blocks|reserved-ips)\/([^/]+)\/detach$/)) || (method === "DELETE" && bare.match(/^\/(blocks|reserved-ips)\/([^/]+)$/)));
+      if (res) {
+        const r = await api.request("GET", `/${res[1]}/${res[2]}`);
+        const attached = res[1] === "blocks" ? r.block?.attached_to_instance : r.reserved_ip?.instance_id;
+        const address = r.reserved_ip?.subnet;
+        if (address && protect.includes(String(address).toLowerCase())) throw new Error(`Refusing: reserved IP ${res[2]} is the protected IP ${address} (ORRERY_SELF_IP or ORRERY_PROTECTED_IPS). Do this in the Vultr website if you really mean it.`);
+        if (attached) await notProtected([attached]);
+      }
     }
     return redactSecrets(await api.request(method, p, { body }));
   };
@@ -251,18 +275,33 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   }));
   add("vultr_reinstall", {
     title: "Reinstall a Vultr instance",
-    description: "Reinstall the instance's operating system, erasing its disk (the IP stays). confirmLabel must repeat its label. Instances with a protected IP are refused. To install a different OS, use vultr_api_request PATCH /instances/{id} with {\"os_id\": ...} instead.",
-    inputSchema: { instanceId: INSTANCE_ID, confirmLabel: z.string(), hostname: z.string().optional() },
+    description: "Reinstall the instance, erasing its disk (the IP stays). confirmLabel must repeat its label. Without osId, appId or imageId it reinstalls the current operating system (hostname optional); give one of them (ids from vultr_query /os or /applications) to install something else instead. Instances with a protected IP are refused.",
+    inputSchema: {
+      instanceId: INSTANCE_ID,
+      confirmLabel: z.string(),
+      hostname: z.string().optional(),
+      osId: z.number().int().positive().optional().describe("Operating system id (GET /os)"),
+      appId: z.number().int().positive().optional().describe("Marketplace application id (GET /applications)"),
+      imageId: z.string().optional().describe("Marketplace application image id (GET /applications)"),
+    },
     annotations: DESTRUCTIVE,
-  }, adminTool("vultr_reinstall", async ({ instanceId, confirmLabel, hostname }) => {
+  }, adminTool("vultr_reinstall", async ({ instanceId, confirmLabel, hostname, osId, appId, imageId }) => {
+    const image = { ...(osId != null ? { os_id: osId } : {}), ...(appId != null ? { app_id: appId } : {}), ...(imageId ? { image_id: imageId } : {}) };
+    if (Object.keys(image).length > 1) throw new Error("Give at most one of osId, appId and imageId.");
+    if (Object.keys(image).length && hostname) throw new Error("hostname only applies to reinstalling the current operating system, not with osId, appId or imageId.");
     assertNotProtected(await assertLabel(api, instanceId, confirmLabel), protect);
+    if (Object.keys(image).length) {
+      // A new OS, app or image is set by PATCH, which reinstalls the instance.
+      const r = await api.request("PATCH", `/instances/${iid(instanceId)}`, { body: image });
+      return toInstance(r.instance || {});
+    }
     const r = await api.request("POST", `/instances/${iid(instanceId)}/reinstall`, { body: hostname ? { hostname } : {} });
     return toInstance(r.instance || {});
   }));
   add("vultr_api_request", {
     title: "Call any Vultr API endpoint",
     description:
-      "Call any Vultr API v2 endpoint, e.g. GET /account, GET /account/bandwidth, GET /billing/invoices, GET /billing/history, GET /regions, GET /plans, GET /os, GET /ssh-keys, POST /ssh-keys ({\"name\", \"ssh_key\"}), POST /instances (create: {\"region\": \"nrt\", \"plan\": \"vc2-1c-1gb\", \"os_id\": 2136, \"label\": \"test-1\", \"hostname\": \"test-1\", \"sshkey_id\": [\"<id>\"], \"tags\": [\"test\"]}), PATCH /instances/{id} (label, tags, plan, firewall_group_id), GET /instances/{id}/bandwidth, /firewalls, /domains, /snapshots, /blocks, /reserved-ips, /vpcs, /bare-metals, /kubernetes/clusters, /databases, /object-storage, /inference (usage: GET /inference/{id}/usage). Paths are relative to https://api.vultr.com/v2 and must be literal (no {placeholders}); pagination is ?per_page=…&cursor=…. Tag short-lived test instances \"test\" so they are easy to find and delete. Deleting and reinstalling an instance go through vultr_delete / vultr_reinstall; restores over a disk, erasing bare-metal servers, requests that hand out keys and changes to an instance with a protected IP are refused; passwords and keys in answers are redacted. Can change or delete anything else in the account.",
+      "Call any Vultr API v2 endpoint, e.g. GET /account, GET /account/bandwidth, GET /billing/invoices, GET /billing/history, GET /regions, GET /plans, GET /os, GET /ssh-keys, POST /ssh-keys ({\"name\", \"ssh_key\"}), POST /instances (create: {\"region\": \"nrt\", \"plan\": \"vc2-1c-1gb\", \"os_id\": 2136, \"label\": \"test-1\", \"hostname\": \"test-1\", \"sshkey_id\": [\"<id>\"], \"tags\": [\"test\"]}), PATCH /instances/{id} (label, tags, plan, firewall_group_id; a new os_id, app_id or image_id reinstalls, so that goes through vultr_reinstall), GET /instances/{id}/bandwidth, /firewalls, /domains, /snapshots, /blocks, /reserved-ips, /vpcs, /bare-metals, /kubernetes/clusters, /databases, /object-storage, /inference (usage: GET /inference/{id}/usage). Paths are relative to https://api.vultr.com/v2 and must be literal (no {placeholders}); pagination is ?per_page=…&cursor=…. Tag short-lived test instances \"test\" so they are easy to find and delete. Deleting and reinstalling an instance go through vultr_delete / vultr_reinstall; restores over a disk, erasing bare-metal servers, requests that hand out keys and changes to an instance with a protected IP (also through instance_id / instance_ids in the body, and detaching block storage or a reserved IP from it) are refused; passwords and keys in answers are redacted. Can change or delete anything else in the account.",
     inputSchema: {
       method: z.enum(METHODS),
       path: z.string().regex(/^\//, "path starts with /").describe("e.g. /instances/<id>/bandwidth"),

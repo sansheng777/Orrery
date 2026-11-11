@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadConfig, createApi, stringToSign, sign, flatten, percentEncode, instances, toInstance, billing, instanceIdsIn, guardRequest, runShell, register as aliyunRegister } from "../index.js";
+import { loadConfig, createApi, stringToSign, sign, flatten, percentEncode, instances, toInstance, billing, instanceIdsIn, guardRequest, redactSecrets, runShell, register as aliyunRegister } from "../index.js";
 
 // ---------- credentials ----------
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "aliyun-test-"));
@@ -38,7 +38,7 @@ const inst = (id, region, extra = {}) => ({
   PublicIpAddress: { IpAddress: extra.ip ? [extra.ip] : [] }, VpcAttributes: { PrivateIpAddress: { IpAddress: ["172.19.225.194"] } },
   InternetMaxBandwidthOut: 3, InstanceChargeType: extra.charge || "PrePaid", ExpiredTime: "2027-11-04T16:00Z", CreationTime: "2026-11-04T04:40Z", Tags: { Tag: extra.tags || [] },
 });
-function fakeAliyun({ failRegion } = {}) {
+function fakeAliyun({ failRegion, finalStatus = "Success" } = {}) {
   const calls = [];
   const beijing = [inst("i-bj1", "cn-beijing", { name: "web", ip: "203.0.113.40" }), ...Array.from({ length: 100 }, (_, n) => inst(`i-bjx${n}`, "cn-beijing", { charge: "PostPaid" }))];
   const fetchImpl = async (url, init) => {
@@ -69,12 +69,17 @@ function fakeAliyun({ failRegion } = {}) {
       case "RunCommand": return ok({ InvokeId: "t-1", CommandId: "c-1" });
       case "DescribeInvocationResults": {
         const n = calls.filter((c) => c.action === "DescribeInvocationResults").length;
-        return ok({ Invocation: { InvocationResults: { InvocationResult: [n < 2 ? { InvocationStatus: "Running" } : { InvocationStatus: "Success", ExitCode: 0, Output: "ORRERY_OK\n" }] } } });
+        return ok({ Invocation: { InvocationResults: { InvocationResult: [n < 2 ? { InvocationStatus: "Running" } : finalStatus === "Success" ? { InvocationStatus: "Success", ExitCode: 0, Output: "ORRERY_OK\n" } : { InvocationStatus: finalStatus, ErrorCode: "InstanceNotRunning" }] } } });
       }
-      case "StartInstance": case "StopInstance": case "RebootInstance": case "DeleteInstance": case "ModifyInstanceAttribute": return ok({});
+      case "StartInstance": case "StopInstance": case "RebootInstance": case "DeleteInstance": case "ModifyInstanceAttribute": case "UnassociateEipAddress": case "AssociateEipAddress": return ok({});
       case "DescribeDomainRecords": assert.equal(host, "alidns.aliyuncs.com"); assert.equal(params.RegionId, undefined, "one endpoint for the account, no RegionId"); return ok({ TotalCount: 1, DomainRecords: { Record: [{ RR: "www", Type: "A", Value: "203.0.113.40" }] } });
       case "AddDomainRecord": assert.equal(host, "alidns.aliyuncs.com"); return ok({ RecordId: "r-1" });
-      case "DescribeEipAddresses": assert.equal(host, `vpc.${params.RegionId}.aliyuncs.com`); return ok({ EipAddresses: { EipAddress: [] } });
+      case "DescribeEipAddresses": {
+        assert.equal(host, `vpc.${params.RegionId}.aliyuncs.com`);
+        const eips = params.RegionId === "cn-beijing" ? [{ AllocationId: "eip-web", IpAddress: "198.51.100.70", InstanceId: "i-bj1", InstanceType: "EcsInstance" }, { AllocationId: "eip-free", IpAddress: "198.51.100.71", InstanceId: "", InstanceType: "" }, { AllocationId: "eip-prot", IpAddress: "203.0.113.41", InstanceId: "ngw-1", InstanceType: "Nat" }] : [];
+        return ok({ EipAddresses: { EipAddress: params.AllocationId ? eips.filter((e) => e.AllocationId === params.AllocationId) : [] } });
+      }
+      case "DescribeCdnDomainConfigs": return ok({ DomainConfigs: { DomainConfig: [{ FunctionName: "aliyun_auth", FunctionArgs: { FunctionArg: [{ ArgName: "auth_type", ArgValue: "type_a" }, { ArgName: "auth_key1", ArgValue: "s1gn1ng" }, { ArgName: "auth_key2", ArgValue: "s1gn2" }] } }, { FunctionName: "set_req_host_header", FunctionArgs: { FunctionArg: [{ ArgName: "domain_name", ArgValue: "example.cn" }] } }] } });
       case "QueryBadSignature": return err(400, "SignatureDoesNotMatch", "Specified signature is not matched with our calculation.");
       default: return err(404, "InvalidAction.NotFound", "Specified api is not found");
     }
@@ -137,6 +142,18 @@ assert.throws(() => guardRequest("ecs", "DeleteInstances"), /aliyun_delete/);
 assert.throws(() => guardRequest("ecs", "CreateKeyPair"), /private key/);
 assert.throws(() => guardRequest("ecs", "DescribeInstanceVncUrl"), /console login token/);
 assert.doesNotThrow(() => guardRequest("ecs", "RunInstances"));
+for (const a of ["ModifyInstanceAutoReleaseTime", "ReplaceSystemDisk", "ResetDisk", "ResetDisks", "replaceSystemDisk"]) assert.throws(() => guardRequest("ecs", a), /without the name confirmation.*Aliyun console/, a);
+assert.throws(() => guardRequest("ecs", "StartTerminalSession"), /shell session credential/);
+assert.throws(() => guardRequest("ecs", "DeleteINSTANCE"), /aliyun_delete/, "ECS refusals ignore case");
+assert.throws(() => guardRequest("ecs", "DescribeInstanceVNCUrl"), /console login token/, "ECS refusals ignore case");
+assert.throws(() => guardRequest("cas", "DescribeCertificatePRIVATEKey"), /private key/, "CAS refusals ignore case");
+assert.doesNotThrow(() => guardRequest("ecs", "ResetDiskAttribute"));
+
+// ---------- redaction: CDN URL-signing keys and private keys ----------
+assert.deepEqual(
+  redactSecrets({ FunctionArgs: { FunctionArg: [{ ArgName: "auth_key1", ArgValue: "k1" }, { ArgName: "Auth_Key2", ArgValue: "k2" }, { ArgName: "auth_type", ArgValue: "type_a" }] }, auth_key1: "k3", auth_key_backup: "k4", note: "-----BEGIN RSA PRIVATE KEY-----\nMII", empty: { ArgName: "auth_key1", ArgValue: "" } }),
+  { FunctionArgs: { FunctionArg: [{ ArgName: "auth_key1", ArgValue: "[redacted]" }, { ArgName: "Auth_Key2", ArgValue: "[redacted]" }, { ArgName: "auth_type", ArgValue: "type_a" }] }, auth_key1: "[redacted]", auth_key_backup: "[redacted]", note: "[redacted]", empty: { ArgName: "auth_key1", ArgValue: "" } },
+);
 assert.deepEqual(instanceIdsIn({ InstanceId: "i-1", InstanceIds: '["i-2","i-3"]', "InstanceId.4": "i-4" }).sort(), ["i-1", "i-2", "i-3", "i-4"]);
 assert.deepEqual(instanceIdsIn({ InstanceId: ["i-5"] }), ["i-5"]);
 
@@ -157,7 +174,23 @@ assert.deepEqual(instanceIdsIn({ InstanceId: ["i-5"] }), ["i-5"]);
   await assert.rejects(t.aliyun_delete({ ...web, confirmName: "web" }), /protected IP/);
   await assert.rejects(t.aliyun_call({ service: "ecs", region: "cn-beijing", action: "ModifyInstanceAttribute", params: { InstanceId: "i-bj1", InstanceName: "x" } }), /protected IP/);
   await assert.rejects(t.aliyun_call({ service: "ecs", region: "cn-beijing", action: "RunCommand", params: { InstanceId: ["i-bj1"], Type: "RunShellScript", CommandContent: "reboot" } }), /protected IP/);
+  // The check runs in the region the call goes to, and fails closed when the instance is not found there.
+  await assert.rejects(t.aliyun_power({ region: "cn-hangzhou", instanceId: "i-bj1", action: "stop" }), /no instance i-bj1 in cn-hangzhou/);
+  await assert.rejects(t.aliyun_call({ service: "ecs", region: "cn-hangzhou", action: "StopInstance", params: { InstanceId: "i-bj1" } }), /no instance i-bj1 in cn-hangzhou/);
+  await assert.rejects(t.aliyun_call({ service: "ecs", region: "cn-hangzhou", action: "StopInstance", params: { InstanceId: "i-bj1", RegionId: "cn-beijing" } }), /instance web \(i-bj1, cn-beijing\) has the protected IP/, "params.RegionId is the region the request uses");
+  await assert.rejects(t.aliyun_call({ service: "ecs", region: "cn-beijing", action: "StopInstance", params: { InstanceId: "i-bj1", RegionId: "cn-hangzhou" } }), /no instance i-bj1 in cn-hangzhou/);
+  await assert.rejects(t.aliyun_call({ service: "ecs", region: "cn-beijing", action: "StopInstances", params: { InstanceId: ["i-bjx1", "i-gone"] } }), /no instance i-gone in cn-beijing/, "every id must be found");
+  await assert.rejects(t.aliyun_call({ service: "ecs", action: "StopInstance", params: { InstanceId: "i-bj1" } }), /without a valid region/);
+  // Not only ECS: the vpc calls that move an elastic IP off a protected instance.
+  await assert.rejects(t.aliyun_call({ service: "vpc", region: "cn-beijing", action: "UnassociateEipAddress", params: { AllocationId: "eip-free", InstanceId: "i-bj1" } }), /instance web \(i-bj1, cn-beijing\) has the protected IP/);
+  await assert.rejects(t.aliyun_call({ service: "vpc", region: "cn-beijing", action: "AssociateEipAddress", params: { AllocationId: "eip-free", InstanceId: "i-bj1" } }), /protected IP/);
+  await assert.rejects(t.aliyun_call({ service: "vpc", region: "cn-beijing", action: "UnassociateEipAddress", params: { AllocationId: "eip-web" } }), /instance web \(i-bj1, cn-beijing\) has the protected IP/, "an EIP named only by AllocationId is traced to its instance");
+  await assert.rejects(t.aliyun_call({ service: "vpc", region: "cn-beijing", action: "UnassociateEipAddress", params: { AllocationId: "eip-nope" } }), /no elastic IP eip-nope in cn-beijing/);
+  const p2 = register({ ORRERY_PROTECTED_IPS: "203.0.113.41" });
+  await assert.rejects(p2.aliyun_call({ service: "vpc", region: "cn-beijing", action: "UnassociateEipAddress", params: { AllocationId: "eip-prot", InstanceId: "ngw-1", InstanceType: "Nat" } }), /elastic IP eip-prot is the protected IP 203\.0\.113\.41/);
   assert.deepEqual(t.calls.filter((c) => !/^Describe/.test(c.action)).map((c) => c.action), [], "nothing was sent to the protected instance");
+  await t.aliyun_call({ service: "vpc", region: "cn-beijing", action: "AssociateEipAddress", params: { AllocationId: "eip-free", InstanceId: "lb-1", InstanceType: "SlbInstance" } });
+  assert.ok(t.calls.some((c) => c.action === "AssociateEipAddress" && c.params.InstanceId === "lb-1"), "an id that is no ECS instance id is not looked up as one");
   await t.aliyun_power({ ...web, action: "start" });
   await t.aliyun_call({ service: "ecs", region: "cn-beijing", action: "StartInstances", params: { InstanceId: ["i-bj1"] } }).catch(() => {});
   assert.ok(t.calls.some((c) => c.action === "StartInstance" && c.params.InstanceId === "i-bj1"), "starting stays allowed");
@@ -179,6 +212,11 @@ assert.deepEqual(instanceIdsIn({ InstanceId: ["i-5"] }), ["i-5"]);
   await assert.rejects(o.aliyun_query({ service: "domain", action: "QueryTransferOutInfo", params: {} }), /transfer code/);
   assert.equal((await o.aliyun_call({ service: "alidns", region: null, action: "AddDomainRecord", params: { DomainName: "example.cn", RR: "www", Type: "A", Value: "1.2.3.4" } })).RecordId, "r-1");
   await assert.rejects(o.aliyun_call({ service: "domain", action: "SaveSingleTaskForTransferOutByAuthorizationCode", params: {} }), /leave this account/);
+  for (const tool of ["aliyun_query", "aliyun_call"]) {
+    const cfg = await o[tool]({ service: "cdn", region: null, action: "DescribeCdnDomainConfigs", params: { DomainName: "cdn.example.cn", FunctionNames: "aliyun_auth" } });
+    assert.deepEqual(cfg.DomainConfigs.DomainConfig[0].FunctionArgs.FunctionArg.map((a) => a.ArgValue), ["type_a", "[redacted]", "[redacted]"], `${tool} redacts CDN URL-signing keys`);
+    assert.equal(cfg.DomainConfigs.DomainConfig[1].FunctionArgs.FunctionArg[0].ArgValue, "example.cn");
+  }
 
   const hub = register({}, false);
   assert.deepEqual(hub.info.tools, ["aliyun_instances", "aliyun_query", "aliyun_billing"], "the hub role only reads");
@@ -194,6 +232,29 @@ assert.deepEqual(instanceIdsIn({ InstanceId: ["i-5"] }), ["i-5"]);
   assert.equal(Buffer.from(run.CommandContent, "base64").toString(), "echo ORRERY_OK");
   assert.equal(run["InstanceId.1"], "i-bj1");
   assert.equal(run.Type, "RunShellScript");
+  for (const finalStatus of ["Invalid", "Stopped", "PartialFailed"]) {
+    const g = fakeAliyun({ finalStatus });
+    const r2 = await runShell(createApi(config, g.fetchImpl), { region: "cn-beijing", instanceId: "i-bj1", script: "true" }, { pollMs: 1, maxWaitMs: 60000 });
+    assert.deepEqual(r2, { status: finalStatus, exitCode: null, output: "", error: "InstanceNotRunning" }, `${finalStatus} is final, not polled until the timeout`);
+  }
+}
+
+// ---------- a retried read is signed afresh ----------
+{
+  const sent = [];
+  let n = 0;
+  const fetchImpl = async (url, init) => {
+    const params = Object.fromEntries(new URLSearchParams(init.body));
+    const { Signature, ...rest } = params;
+    assert.equal(Signature, sign("POST", rest, SECRET));
+    sent.push(params);
+    return n++ ? new Response(JSON.stringify({ RequestId: "r", Regions: { Region: [] } }), { status: 200 }) : new Response(JSON.stringify({ Code: "ServiceUnavailable" }), { status: 503 });
+  };
+  let k = 0;
+  await createApi(config, fetchImpl, { retryWaitMs: 1, nonce: () => `nonce-${k++}` }).request("ecs", null, "DescribeRegions");
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent.map((p) => p.SignatureNonce), ["nonce-0", "nonce-1"], "a fresh SignatureNonce per attempt");
+  assert.notEqual(sent[0].Signature, sent[1].Signature, "and a fresh Signature");
 }
 
 console.log("aliyun test passed");

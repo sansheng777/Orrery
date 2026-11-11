@@ -28,9 +28,10 @@ function fakeVultr() {
     const p = u.pathname.replace("/v2", "");
     calls.push({ method, path: p + u.search, body: init.body ? JSON.parse(init.body) : undefined });
     if (p === "/instances" && method === "GET") {
-      return u.searchParams.get("cursor") === "page2"
-        ? json(200, { instances: [raw[B]], meta: { total: 2, links: { next: "", prev: "page1" } } })
-        : json(200, { instances: [raw[A]], meta: { total: 2, links: { next: "page2", prev: "" } } });
+      // Vultr's cursors are base64 and may end in "=" padding.
+      return u.searchParams.get("cursor") === "bmV4dF9fOA=="
+        ? json(200, { instances: [raw[B]], meta: { total: 2, links: { next: "", prev: "cHJldl9fMQ==" } } })
+        : json(200, { instances: [raw[A]], meta: { total: 2, links: { next: "bmV4dF9fOA==", prev: "" } } });
     }
     const one = p.match(/^\/instances\/([^/]+)$/);
     if (one && method === "GET" && raw[one[1]]) return json(200, { instance: raw[one[1]] });
@@ -39,6 +40,13 @@ function fakeVultr() {
     if (p === "/databases/db1") return json(200, { database: { id: "db1", user: "vultradmin", password: "dbsecret", read_replicas: [{ password: "x" }] } });
     if (p === "/inference") return json(200, { subscriptions: [{ id: "inf1", label: "glm", api_key: "INFKEY" }] });
     if (p === "/plans") return json(400, { error: "Invalid plan type", status: 400 });
+    if (p === "/snapshots" && method === "POST") return json(202, { snapshot: { id: "snap1", status: "pending" } });
+    if (p === "/blocks/blk-proxy" && method === "GET") return json(200, { block: { id: "blk-proxy", attached_to_instance: A } });
+    if (p === "/blocks/blk-free" && method === "GET") return json(200, { block: { id: "blk-free", attached_to_instance: "" } });
+    if (p === "/reserved-ips/rip-proxy" && method === "GET") return json(200, { reserved_ip: { id: "rip-proxy", subnet: "198.51.100.80", instance_id: A } });
+    if (p === "/reserved-ips/rip-prot" && method === "GET") return json(200, { reserved_ip: { id: "rip-prot", subnet: "203.0.113.90", instance_id: "" } });
+    if (p === "/databases/db1/users") return json(200, { users: [{ username: "u", password: "p", access_key: "-----BEGIN PRIVATE KEY-----\nMII", access_cert: "-----BEGIN CERTIFICATE-----\nMII" }] });
+    if (/^\/(blocks|reserved-ips)\/[^/]+(\/(attach|detach))?$/.test(p) || (one && method === "PATCH")) return new Response(null, { status: 204 });
     return json(404, { error: "Not found", status: 404 });
   };
   return { calls, fetchImpl };
@@ -63,7 +71,7 @@ assert.doesNotMatch(bad.error, /secret/, "file content never reaches the connect
 let f = fakeVultr();
 let api = createApi(config, f.fetchImpl);
 const res = await instances(api, { matchHosts: async () => (ips) => (ips.includes("10.1.96.3") ? { id: "lan", name: "wrong" } : ips.includes("203.0.113.10") ? { id: "s1", name: "tokyo" } : null) });
-assert.deepEqual(f.calls.map((c) => c.path), ["/instances?per_page=500", "/instances?per_page=500&cursor=page2"]);
+assert.deepEqual(f.calls.map((c) => c.path), ["/instances?per_page=500", "/instances?per_page=500&cursor=bmV4dF9fOA%3D%3D"], "a padded cursor survives the path check");
 assert.equal(res.instances.length, 2);
 {
   const g = fakeVultr();
@@ -95,6 +103,10 @@ await assert.rejects(assertLabel(api, "not-a-uuid", "x"), /Invalid Vultr instanc
 assert.throws(() => guardRequest("DELETE", `/instances/${A}`), /vultr_delete/);
 assert.throws(() => guardRequest("DELETE", `/instances/${A}/`), /vultr_delete/);
 assert.throws(() => guardRequest("POST", `/instances/${A}/reinstall`), /vultr_reinstall/);
+for (const body of [{ os_id: 2136 }, { app_id: 7 }, { image_id: "wordpress" }, { label: "x", os_id: 477 }]) {
+  assert.throws(() => guardRequest("PATCH", `/instances/${A}`, body), /reinstalls it and erases its disk; use vultr_reinstall/, JSON.stringify(body));
+}
+assert.doesNotThrow(() => guardRequest("PATCH", `/instances/${A}`, { label: "x", plan: "vc2-2c-4gb" }));
 assert.throws(() => guardRequest("POST", `/instances/${A}/restore`), /overwrites the server's disk/);
 assert.throws(() => guardRequest("POST", "/bare-metals/bm1/restore"), /overwrites/);
 assert.throws(() => guardRequest("DELETE", "/bare-metals/bm1"), /bare-metal server erases it/);
@@ -114,12 +126,20 @@ assert.equal(normalizePath("/instances?per_page=100&cursor=bmV4dA=="), "/instanc
 assert.deepEqual(redactSecrets({ instance: { id: "i", default_password: "Hunter2!", label: "x" } }), { instance: { id: "i", default_password: "[redacted]", label: "x" } });
 assert.deepEqual(redactSecrets({ instance: { id: "i", kvm: "https://console.vultr.com/subs/vps/novnc/api.php?data=abc", hostname: "x" } }), { instance: { id: "i", kvm: "[redacted]", hostname: "x" } }, "the web console URL carries a token");
 assert.deepEqual(redactSecrets({ a: [{ s3_secret_key: "k", s3_access_key: "a", s3_hostname: "h" }], password: "" }), { a: [{ s3_secret_key: "[redacted]", s3_access_key: "[redacted]", s3_hostname: "h" }], password: "" });
+assert.deepEqual(
+  redactSecrets({ user: { username: "u", access_key: "-----BEGIN PRIVATE KEY-----\nMII", access_cert: "-----BEGIN CERTIFICATE-----\nMII" }, note: "-----BEGIN OPENSSH PRIVATE KEY-----\nb3Bl", label: "x" }),
+  { user: { username: "u", access_key: "[redacted]", access_cert: "-----BEGIN CERTIFICATE-----\nMII" }, note: "[redacted]", label: "x" },
+  "a database user's access_key and any private key are redacted; a certificate is not a secret",
+);
 
 // ---------- ids a request names ----------
 assert.deepEqual(instanceIdsIn("POST", `/instances/${A}/halt`), { ids: [A], rest: "/halt" });
 assert.deepEqual(instanceIdsIn("POST", "/instances/halt", { instance_ids: [A, B] }), { ids: [A, B], rest: "" });
 assert.deepEqual(instanceIdsIn("POST", "/instances/start", { instance_ids: [A] }), { ids: [], rest: "" }, "starting is never blocked");
 assert.deepEqual(instanceIdsIn("POST", "/instances"), { ids: [], rest: "" });
+assert.deepEqual(instanceIdsIn("POST", "/blocks/blk1/attach", { instance_id: A, live: true }), { ids: [A], rest: "" });
+assert.deepEqual(instanceIdsIn("POST", "/vpcs/v1/attach", { instance_ids: [B, A] }), { ids: [B, A], rest: "" });
+assert.deepEqual(instanceIdsIn("PATCH", `/instances/${B}`, { instance_id: A }), { ids: [B, A], rest: "" });
 
 // ---------- rate limits and key errors ----------
 function flaky(statuses, headers = {}) {
@@ -169,7 +189,33 @@ await assert.rejects(api.request("GET", "/instances"), /Invalid API token\. \(th
   await assert.rejects(t.vultr_api_request({ method: "PATCH", path: `/instances/${A}`, body: { plan: "vc2-2c-4gb" } }), /protected IP/);
   await assert.rejects(t.vultr_api_request({ method: "POST", path: "/instances/reboot", body: { instance_ids: [B, A] } }), /protected IP/);
   await assert.rejects(t.vultr_api_request({ method: "POST", path: "/instances/halt/extra" }), /Invalid Vultr instance id/, "an id that is not a UUID is not let through unchecked");
+  // Instances named in the body, and block storage or reserved IPs attached to them.
+  for (const [method, p, body] of [
+    ["POST", "/blocks/blk-free/attach", { instance_id: A, live: true }],
+    ["POST", "/blocks/blk-free/attach", { instance_id: A }],
+    ["POST", "/blocks/blk-proxy/detach", { live: true }],
+    ["POST", "/blocks/blk-proxy/detach"],
+    ["DELETE", "/blocks/blk-proxy"],
+    ["POST", "/reserved-ips/rip-proxy/detach"],
+    ["DELETE", "/reserved-ips/rip-proxy"],
+    ["POST", "/reserved-ips/rip-free/attach", { instance_id: A }],
+    ["POST", "/firewalls/fw1/instances", { instance_ids: [A] }],
+  ]) {
+    await assert.rejects(t.vultr_api_request({ method, path: p, body }), /instance cb676a46-.* \(tokyo-proxy\) has the protected IP/, `${method} ${p}`);
+  }
+  const p2 = setup({ ORRERY_PROTECTED_IPS: "203.0.113.90" });
+  await assert.rejects(p2.vultr_api_request({ method: "POST", path: "/reserved-ips/rip-prot/detach" }), /reserved IP rip-prot is the protected IP 203\.0\.113\.90/);
+  await assert.rejects(t.vultr_reinstall({ instanceId: A, confirmLabel: "tokyo-proxy", osId: 2136 }), /protected IP/);
   assert.deepEqual(t.calls.filter((c) => c.method !== "GET"), [], "nothing was sent to the protected instance");
+  {
+    const snap = setup({ ORRERY_PROTECTED_IPS: "203.0.113.10" });
+    await snap.vultr_api_request({ method: "POST", path: "/snapshots", body: { instance_id: A, description: "backup" } });
+    assert.ok(snap.calls.some((c) => c.method === "POST" && c.path === "/snapshots"), "a snapshot of a protected instance is allowed");
+  }
+  await t.vultr_api_request({ method: "POST", path: "/blocks/blk-free/detach" });
+  await t.vultr_api_request({ method: "POST", path: "/blocks/blk-free/attach", body: { instance_id: B, live: true } });
+  assert.deepEqual(t.calls.filter((c) => c.method !== "GET").map((c) => c.path), ["/blocks/blk-free/detach", "/blocks/blk-free/attach"], "other blocks and instances stay usable");
+  t.calls.length = 0;
   await t.vultr_power({ instanceId: A, action: "start" });
   await t.vultr_api_request({ method: "POST", path: `/instances/${A}/start` });
   await t.vultr_api_request({ method: "POST", path: "/instances/start", body: { instance_ids: [A] } });
@@ -178,6 +224,16 @@ await assert.rejects(api.request("GET", "/instances"), /Invalid API token\. \(th
   const other = setup({ ORRERY_PROTECTED_IPS: "198.51.100.1" });
   assert.deepEqual(await other.vultr_power({ instanceId: A, action: "reboot" }), { ok: true, instanceId: A, action: "reboot" });
   await assert.rejects(other.vultr_delete({ instanceId: A, confirmLabel: "wrong" }), /confirmLabel must be "tokyo-proxy"/);
+  // A new OS, app or image goes through vultr_reinstall (label confirmed), never a bare PATCH.
+  await assert.rejects(other.vultr_api_request({ method: "PATCH", path: `/instances/${A}`, body: { os_id: 2136 } }), /use vultr_reinstall/);
+  await assert.rejects(other.vultr_reinstall({ instanceId: A, confirmLabel: "wrong", osId: 2136 }), /confirmLabel must be "tokyo-proxy"/);
+  await assert.rejects(other.vultr_reinstall({ instanceId: A, confirmLabel: "tokyo-proxy", osId: 2136, appId: 7 }), /at most one of osId, appId and imageId/);
+  const n0 = other.calls.length;
+  await assert.rejects(other.vultr_reinstall({ instanceId: A, confirmLabel: "tokyo-proxy", osId: 2136, hostname: "tp" }), /hostname only applies/);
+  await other.vultr_reinstall({ instanceId: A, confirmLabel: "tokyo-proxy", osId: 2136 });
+  await other.vultr_reinstall({ instanceId: A, confirmLabel: "tokyo-proxy", imageId: "wordpress" });
+  assert.deepEqual(other.calls.slice(n0).filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path} ${JSON.stringify(c.body)}`), [`PATCH /instances/${A} {"os_id":2136}`, `PATCH /instances/${A} {"image_id":"wordpress"}`]);
+  assert.equal((await other.vultr_query({ path: "/databases/db1/users" })).users[0].access_key, "[redacted]");
   const created = await other.vultr_api_request({ method: "POST", path: "/instances", body: { region: "nrt" } });
   assert.equal(created.instance.default_password, "[redacted]", "a new instance's root password never reaches the chat");
   assert.equal((await other.vultr_api_request({ method: "GET", path: "/databases/db1" })).database.password, "[redacted]");

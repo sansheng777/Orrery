@@ -41,8 +41,10 @@ function readJson(req) {
     req.on("data", (c) => {
       size += c.length;
       if (size > MAX_BODY) {
-        reject(Object.assign(new Error("Request body too large"), { status: 413 }));
-        req.destroy();
+        // Stop buffering but keep reading, so the 413 reaches the client; the socket closes after it.
+        req.removeAllListeners("data");
+        req.resume();
+        reject(Object.assign(new Error("Request body too large"), { status: 413, close: true }));
       } else chunks.push(c);
     });
     req.on("end", () => {
@@ -90,6 +92,7 @@ export async function startHttp({ port = Number(process.env.PORT) || 8787, host 
     try {
       body = await readJson(req);
     } catch (e) {
+      if (e.close) res.setHeader("Connection", "close");
       return send(res, e.status || 400, { error: e.message });
     }
     const server = createServer();

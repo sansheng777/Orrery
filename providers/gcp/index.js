@@ -14,9 +14,8 @@ export const name = "Google Cloud";
 export const API = "https://compute.googleapis.com/compute/v1";
 export const SCOPE = "https://www.googleapis.com/auth/compute";
 export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
-// The user ssh_bootstrap creates through instance metadata; Google's guest agent gives it sudo.
-// The login user onboarding creates on Compute Engine instances (through ssh-keys metadata). Set
-// ORRERY_GCP_SSH_USER to keep a user your machines already trust.
+// The login user ssh_bootstrap creates on Compute Engine instances through ssh-keys metadata (Google's
+// guest agent gives it sudo). Set ORRERY_GCP_SSH_USER to keep a user your machines already trust.
 export const SSH_USER = process.env.ORRERY_GCP_SSH_USER || "orrery";
 const TIMEOUT_MS = 30000;
 const PROJECT = /^[a-z][a-z0-9.:-]{4,62}$/; // includes domain-scoped ids such as example.com:my-project
@@ -183,12 +182,21 @@ export function target({ project, zone, name: instance }) {
   return `/projects/${project}/zones/${zone}/instances/${instance}`;
 }
 
+// Custom methods on the instances collection itself, not on an instance of that name.
+export const COLLECTION_VERBS = new Set(["bulkInsert"]);
+
 // Requests the generic tool refuses: deleting an instance goes through gcp_delete, which asks for its
-// name; deleting a disk erases its data and is left to the console.
+// name; deleting a disk erases its data and is left to the console; so are managed instance group calls
+// that delete, recreate or abandon members, shrink the group or delete it, since they reach instances (a
+// protected one among them) without naming them.
 export function guardRequest(method, p) {
   const bare = normalizePath(p).split("?")[0];
   if (method === "DELETE" && /^\/projects\/[^/]+\/zones\/[^/]+\/instances\/[^/]+$/.test(bare)) throw new Error("Deleting an instance goes through gcp_delete, which asks for its name.");
   if (method === "DELETE" && /^\/projects\/[^/]+\/(zones|regions)\/[^/]+\/disks\/[^/]+$/.test(bare)) throw new Error("Deleting a disk erases its data; do it in the Google Cloud console.");
+  const mig = bare.match(/^\/projects\/[^/]+\/(?:zones|regions)\/[^/]+\/instanceGroupManagers\/[^/]+(\/(?:deleteInstances|recreateInstances|abandonInstances|resize))?$/i);
+  if (mig && (mig[1] ? method === "POST" : method === "DELETE")) {
+    throw new Error(`${method} ${bare} deletes, recreates, detaches or resizes away instances of a managed instance group (or deletes the group) without naming them, so a protected instance could be among them; do it in the Google Cloud console.`);
+  }
 }
 
 // ORRERY_SELF_IP plus ORRERY_PROTECTED_IPS: instances a chat may start but never stop, reset,
@@ -261,7 +269,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   const request = async (method, p, body) => {
     guardRequest(method, p);
     const m = normalizePath(p).split("?")[0].match(/^\/projects\/([^/]+)\/zones\/([^/]+)\/instances\/([^/]+)(\/[^/]+)?$/);
-    if (method !== "GET" && m && m[4] !== "/start" && m[4] !== "/resume") await notProtected({ project: m[1], zone: m[2], name: m[3] });
+    if (method !== "GET" && m && !(COLLECTION_VERBS.has(m[3]) && !m[4]) && m[4] !== "/start" && m[4] !== "/resume") await notProtected({ project: m[1], zone: m[2], name: m[3] });
     return api.request(method, p, { body });
   };
 
@@ -276,7 +284,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   };
   add("gcp_power", {
     title: "Start, stop, reset, suspend or resume a Compute Engine instance",
-    description: "start or resume a stopped/suspended instance; stop (clean shutdown), reset (hard restart) or suspend a running one. Returns the operation; follow it with gcp_api_request GET /projects/{project}/zones/{zone}/operations/{name}. An instance with a protected IP can only be started or resumed.",
+    description: "start or resume a stopped/suspended instance; stop (clean shutdown), reset (hard restart) or suspend a running one. Returns the operation; follow it with gcp_query /projects/{project}/zones/{zone}/operations/{name}. An instance with a protected IP can only be started or resumed.",
     inputSchema: { ...where, action: z.enum(["start", "stop", "reset", "suspend", "resume"]) },
     annotations: DESTRUCTIVE,
   }, adminTool("gcp_power", async ({ project, zone, name: instance, action }) => {
@@ -301,7 +309,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   add("gcp_api_request", {
     title: "Call any Compute Engine API endpoint",
     description:
-      "Call any Compute Engine API v1 endpoint, e.g. GET /projects/{p}/zones (zones), GET /projects/{p}/zones/{z}/machineTypes, GET /projects/{p}/global/images/family/... or /projects/debian-cloud/global/images/family/debian-12, POST /projects/{p}/zones/{z}/instances (create; put the ssh_public_key in metadata ssh-keys as \"orrery:<key>\"), POST .../instances/{name}/setMachineType, setLabels, setMetadata, GET /projects/{p}/global/firewalls, POST /projects/{p}/global/firewalls, GET /projects/{p}/zones/{z}/operations/{op}. Paths are relative to https://compute.googleapis.com/compute/v1, start with /projects/ and must be literal (no {placeholders}). Label short-lived test instances test=true so they are easy to find and delete. Deleting an instance goes through gcp_delete; deleting disks and changes to an instance with a protected IP are refused. Can change or delete anything else Compute Engine offers in the configured projects.",
+      "Call any Compute Engine API v1 endpoint, e.g. GET /projects/{p}/zones (zones), GET /projects/{p}/zones/{z}/machineTypes, GET /projects/{p}/global/images/family/... or /projects/debian-cloud/global/images/family/debian-12, POST /projects/{p}/zones/{z}/instances (create; put the ssh_public_key in metadata ssh-keys as \"orrery:<key>\"), POST .../instances/{name}/setMachineType, setLabels, setMetadata, GET /projects/{p}/global/firewalls, POST /projects/{p}/global/firewalls, GET /projects/{p}/zones/{z}/operations/{op}. Paths are relative to https://compute.googleapis.com/compute/v1, start with /projects/ and must be literal (no {placeholders}). Label short-lived test instances test=true so they are easy to find and delete. Deleting an instance goes through gcp_delete; deleting disks, managed instance group calls that delete, recreate, abandon or resize members (or delete the group) and changes to an instance with a protected IP are refused. Can change or delete anything else Compute Engine offers in the configured projects.",
     inputSchema: {
       method: z.enum(METHODS),
       path: z.string().regex(/^\/projects\//, "path starts with /projects/").describe("e.g. /projects/my-project/zones/asia-east1-b/instances"),

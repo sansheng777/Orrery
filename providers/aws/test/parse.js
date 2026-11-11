@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { loadConfig, parseCost, costPeriod, instances, cost, ec2Power, ec2Terminate, lightsailPower, lightsailDelete, call, query, protectedIps } from "../index.js";
+import { loadConfig, parseCost, costPeriod, instances, cost, ec2Power, ec2Terminate, lightsailPower, lightsailDelete, call, query, protectedIps, redactSecrets } from "../index.js";
 
 const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const fixture = (f) => fs.readFileSync(path.join(dir, f), "utf8");
@@ -34,11 +34,12 @@ const matchHosts = async () => (ips) => (ips.includes("203.0.113.10") ? { id: "a
 
 // ---------- instances: EC2 pages, Lightsail, CloudWatch ----------
 const readRoutes = (cloudwatch = "ok") => (service, op, body, host) => {
+  if (op === "GetRegions") return [200, "lightsail-get-regions.json"];
   if (service === "ec2" && host.includes("ap-northeast-1")) return [200, new URLSearchParams(body).get("NextToken") ? "describe-instances-page2.xml" : "describe-instances-page1.xml"];
   if (service === "ec2" && host.includes("us-west-2")) return [200, "describe-instances-empty.xml"];
   if (service === "ec2") return [403, "ec2-unauthorized.xml"];
   if (service === "lightsail" && host.includes("ap-northeast-1")) return [200, "lightsail-get-instances.json"];
-  if (service === "lightsail") return [200, null];
+  if (service === "lightsail") return [400, "lightsail-not-found.json"]; // asking a region without Lightsail fails
   if (service === "monitoring") return cloudwatch === "ok" ? [200, "get-metric-data.json"] : [400, "cloudwatch-access-denied.json"];
 };
 
@@ -64,11 +65,13 @@ assert.equal(blog.launchTime, new Date(1788000000 * 1000).toISOString());
 assert.equal(blog.cpuPercent, null, "CloudWatch is only asked for EC2");
 assert.equal(res.regions.length, 3);
 assert.match(res.regions[2].error, /UnauthorizedOperation/, "a failing region is reported, not fatal");
+assert.deepEqual(fake.calls.filter((c) => c.op === "GetInstances").map((c) => c.region), ["ap-northeast-1"], "configured regions: Lightsail is only asked where it exists");
+assert.deepEqual(res.regions.map((r) => r.lightsailError), [null, null, null]);
 assert.equal(res.cpu.status, "ok");
 const cw = fake.calls.find((c) => c.service === "monitoring");
 assert.deepEqual(JSON.parse(cw.body).MetricDataQueries.map((q) => q.MetricStat.Metric.Dimensions[0].Value), ["i-0123456789abcdef0"], "only running EC2 instances are queried");
 assert.ok(fake.calls.every((c) => /^AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE\//.test(c.auth)), "requests are signed by the SDK");
-assert.ok(fake.calls.every((c) => ["DescribeInstances", "GetInstances", "GetMetricData"].includes(c.op)), "the dashboard only reads");
+assert.ok(fake.calls.every((c) => ["DescribeInstances", "GetInstances", "GetRegions", "GetMetricData"].includes(c.op)), "the dashboard only reads");
 
 fake = fakeAws(readRoutes("denied"));
 res = await instances({ ...base, sdk: fake.sdk }, { matchHosts });
@@ -104,7 +107,7 @@ const ceDenied = fakeAws(() => [400, "ce-access-denied.json"]);
 await assert.rejects(cost({ ...base, credentials: { ...base.credentials, accessKeyId: "AKIAOTHER" }, sdk: ceDenied.sdk }), /AccessDeniedException/);
 
 // ---------- control ----------
-fake = fakeAws((service, op) => ({ StartInstances: [200, "ec2-start-instances.xml"], StopInstance: [200, "lightsail-stop-instance.json"], DescribeInstances: [200, "describe-instances-page1.xml"], TerminateInstances: [200, "ec2-terminate-instances.xml"], DeleteInstance: [200, "lightsail-stop-instance.json"] })[op]);
+fake = fakeAws((service, op) => ({ StartInstances: [200, "ec2-start-instances.xml"], StopInstance: [200, "lightsail-stop-instance.json"], DescribeInstances: [200, "describe-instances-page1.xml"], TerminateInstances: [200, "ec2-terminate-instances.xml"], GetInstance: [200, "lightsail-get-instance.json"], DeleteInstance: [200, "lightsail-stop-instance.json"] })[op]);
 const cfg = { ...base, sdk: fake.sdk };
 assert.deepEqual(await ec2Power(cfg, { region: "ap-northeast-1", instanceId: "i-0fedcba9876543210", action: "start" }), [{ instanceId: "i-0fedcba9876543210", from: "stopped", to: "pending" }]);
 assert.equal(new URLSearchParams(fake.calls.at(-1).body).get("InstanceId.1"), "i-0fedcba9876543210");
@@ -113,10 +116,21 @@ assert.deepEqual(ls, [{ id: "e0d2b1c4-0000-4000-8000-000000000002", type: "StopI
 assert.deepEqual(JSON.parse(fake.calls.at(-1).body), { instanceName: "blog-tokyo", force: false });
 
 const before = fake.calls.length;
-await assert.rejects(ec2Terminate(cfg, { region: "ap-northeast-1", instanceId: "i-0123456789abcdef0", confirmName: "web" }), /Refusing: confirmName must be "i-0123456789abcdef0" or "web & api"/);
+await assert.rejects(ec2Terminate(cfg, { region: "ap-northeast-1", instanceId: "i-0123456789abcdef0", confirmName: "web" }), /Refusing: confirmName must be "web & api" \(the instance's Name tag\)/);
+await assert.rejects(ec2Terminate(cfg, { region: "ap-northeast-1", instanceId: "i-0123456789abcdef0", confirmName: "i-0123456789abcdef0" }), /must be "web & api"/, "an instance with a Name tag is not confirmed by its id");
 assert.ok(!fake.calls.slice(before).some((x) => x.op === "TerminateInstances"), "nothing is terminated without the right name");
 assert.deepEqual(await ec2Terminate(cfg, { region: "ap-northeast-1", instanceId: "i-0123456789abcdef0", confirmName: "web & api" }), [{ instanceId: "i-0123456789abcdef0", from: "running", to: "shutting-down" }]);
-await assert.rejects(lightsailDelete(cfg, { region: "ap-northeast-1", instanceName: "blog-tokyo", confirmName: "blog" }), /Refusing/);
+await assert.rejects(lightsailDelete(cfg, { region: "ap-northeast-1", instanceName: "blog-tokyo", confirmName: "blog" }), /Refusing: confirmName must be "blog-tokyo"/);
+assert.ok(!fake.calls.slice(before).some((x) => x.op === "DeleteInstance"));
+await lightsailDelete(cfg, { region: "ap-northeast-1", instanceName: "blog-tokyo", confirmName: "blog-tokyo" });
+assert.deepEqual(fake.calls.slice(-2).map((x) => x.op), ["GetInstance", "DeleteInstance"], "the name is compared with the instance Lightsail returns");
+{
+  // An instance without a Name tag is confirmed by its id.
+  const unnamed = fakeAws((service, op) => ({ DescribeInstances: [200, "describe-instances-page2.xml"], TerminateInstances: [200, "ec2-terminate-instances.xml"] })[op]);
+  await assert.rejects(ec2Terminate({ ...base, sdk: unnamed.sdk }, { region: "ap-northeast-1", instanceId: "i-0fedcba9876543210", confirmName: "web" }), /must be "i-0fedcba9876543210" \(the instance id; it has no Name tag\)/);
+  await ec2Terminate({ ...base, sdk: unnamed.sdk }, { region: "ap-northeast-1", instanceId: "i-0fedcba9876543210", confirmName: "i-0fedcba9876543210" });
+  assert.equal(unnamed.calls.at(-1).op, "TerminateInstances");
+}
 
 const generic = await call(cfg, { service: "ec2", region: "ap-northeast-1", operation: "StartInstances", input: { InstanceIds: ["i-0fedcba9876543210"] } });
 assert.equal(generic.result.StartingInstances[0].CurrentState.Name, "pending");
@@ -131,6 +145,10 @@ for (const operation of ["StartInstances", "RunInstances", "TerminateInstances",
 }
 await assert.rejects(query(cfg, { service: "ec2", region: "ap-northeast-1", operation: "GetPasswordData", input: {} }), /must not end up in the chat/);
 await assert.rejects(query(cfg, { service: "lightsail", region: "ap-northeast-1", operation: "GetInstanceAccessDetails", input: {} }), /must not end up in the chat/);
+// The instance console can show passwords printed at first boot: refused in both tools.
+for (const operation of ["GetConsoleOutput", "GetConsoleScreenshot"]) {
+  for (const fn of [call, query]) await assert.rejects(fn(cfg, { service: "ec2", region: "ap-northeast-1", operation, input: { InstanceId: "i-0123456789abcdef0" } }), /returns the instance's console, which can show passwords/, operation);
+}
 
 // ---------- config ----------
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "hub-aws-"));
@@ -165,12 +183,24 @@ fs.rmSync(tmp, { recursive: true, force: true });
   assert.equal(r.result.accessKeys[0].secretAccessKey, "[redacted]");
   assert.equal(r.result.accessKeys[0].accessKeyId, "AKIAEXAMPLEBUCKET01");
   assert.ok(r.result.accessKeys[0].createdAt instanceof Date, "other values are left as the SDK parsed them");
+  // User data (base64 cloud-init) often carries passwords and tokens.
+  const ud = fakeAws((service, op) => (op === "DescribeInstanceAttribute" ? [200, "describe-instance-attribute-userdata.xml"] : null));
+  const u = await query({ ...base, sdk: ud.sdk }, { service: "ec2", region: "ap-northeast-1", operation: "DescribeInstanceAttribute", input: { InstanceId: "i-0123456789abcdef0", Attribute: "userData" } });
+  assert.deepEqual(u.result, { InstanceId: "i-0123456789abcdef0", UserData: "[redacted]" });
+  const nested = { LaunchTemplateVersions: [{ LaunchTemplateData: { ImageId: "ami-1", UserData: "I2Nsb3VkLWNvbmZpZw==" } }], userData: "x" };
+  assert.deepEqual(redactSecrets(nested), { LaunchTemplateVersions: [{ LaunchTemplateData: { ImageId: "ami-1", UserData: "[redacted]" } }], userData: "[redacted]" });
 }
 
 // ---------- protected IPs (ORRERY_SELF_IP, ORRERY_PROTECTED_IPS): read and start only ----------
 {
   assert.deepEqual(protectedIps({ ORRERY_SELF_IP: "198.51.100.10", ORRERY_PROTECTED_IPS: "198.51.100.20" }), ["198.51.100.10", "198.51.100.20"]);
   const p = fakeAws((service, op, body) => {
+    const q = new URLSearchParams(body);
+    if (op === "DescribeAddresses") {
+      return [200, { "eipalloc-0a1b2c3d4e5f60718": "describe-addresses-protected.xml", "eipassoc-0b1b2c3d4e5f60718": "describe-addresses-secondary.xml" }[q.get("Filter.1.Value.1")] || "describe-addresses-free.xml"];
+    }
+    if (op === "DescribeNetworkInterfaces") return [200, q.get("NetworkInterfaceId.1") === "eni-0e1b2c3d4e5f60718" ? "describe-network-interfaces-associated.xml" : "describe-network-interfaces-attached.xml"];
+    if (op === "ReleaseAddress") return [200, "ec2-release-address.xml"];
     if (op === "DescribeInstances") return [200, new URLSearchParams(body).get("InstanceId.1") === "i-0123456789abcdef0" ? "describe-instances-page1.xml" : "describe-instances-page2.xml"];
     if (op === "GetInstance" && JSON.parse(body).instanceName === "new-1") return [400, "lightsail-not-found.json"];
     if (op === "CreateInstances") return [200, "lightsail-stop-instance.json"];
@@ -190,12 +220,24 @@ fs.rmSync(tmp, { recursive: true, force: true });
   // resourceName is an instance too (SetIpAddressType can drop its public IPv4), and a protected static IP is not moved away.
   await assert.rejects(call(pcfg, { service: "lightsail", region: "ap-northeast-1", operation: "SetIpAddressType", input: { resourceType: "Instance", resourceName: "blog-tokyo", ipAddressType: "ipv6" } }), /Lightsail instance blog-tokyo has the protected IP/);
   await assert.rejects(call(pcfg, { service: "lightsail", region: "ap-northeast-1", operation: "AttachStaticIp", input: { staticIpName: "StaticIp-blog", instanceName: "new-1" } }), /static IP StaticIp-blog has the protected IP/);
+  // Elastic IPs and network interfaces: a protected address, or one held by a protected instance, is not
+  // moved, disassociated or released, and a protected instance's interfaces keep their addresses and groups.
+  const ec2Call = (operation, input) => call(pcfg, { service: "ec2", region: "ap-northeast-1", operation, input });
+  await assert.rejects(ec2Call("ReleaseAddress", { AllocationId: "eipalloc-0a1b2c3d4e5f60718" }), /Elastic IP eipalloc-0a1b2c3d4e5f60718 has the protected IP 203\.0\.113\.10/);
+  await assert.rejects(ec2Call("AssociateAddress", { AllocationId: "eipalloc-0a1b2c3d4e5f60718", InstanceId: "i-0fedcba9876543210", AllowReassociation: true }), /Elastic IP .* protected IP 203\.0\.113\.10/);
+  const looked = p.calls.length;
+  await assert.rejects(ec2Call("DisassociateAddress", { PublicIp: "203.0.113.10" }), /Elastic IP 203\.0\.113\.10 has the protected IP/);
+  assert.equal(p.calls.length, looked, "a protected PublicIp is refused without a lookup");
+  await assert.rejects(ec2Call("DisassociateAddress", { AssociationId: "eipassoc-0b1b2c3d4e5f60718" }), /EC2 instance i-0123456789abcdef0 has the protected IP 203\.0\.113\.10/, "a second address of a protected instance stays");
+  await assert.rejects(ec2Call("ModifyNetworkInterfaceAttribute", { NetworkInterfaceId: "eni-0d1b2c3d4e5f60718", Groups: ["sg-0123456789abcdef0"] }), /EC2 instance i-0123456789abcdef0 has the protected IP/);
+  await assert.rejects(ec2Call("UnassignPrivateIpAddresses", { NetworkInterfaceId: "eni-0e1b2c3d4e5f60718", PrivateIpAddresses: ["172.31.2.41"] }), /network interface eni-0e1b2c3d4e5f60718 has the protected IP 203\.0\.113\.10/);
   assert.deepEqual(changed(), [], "nothing was stopped, rebooted, terminated, deleted or released");
   await ec2Power(pcfg, { region: "ap-northeast-1", instanceId: web, action: "start" });
   await lightsailPower(pcfg, { region: "ap-northeast-1", instanceName: "blog-tokyo", action: "start" });
   await call(pcfg, { service: "ec2", region: "ap-northeast-1", operation: "StartInstances", input: { InstanceIds: [web] } });
   await ec2Power(pcfg, { region: "ap-northeast-1", instanceId: "i-0fedcba9876543210", action: "stop" }); // not protected
   await call(pcfg, { service: "lightsail", region: "ap-northeast-1", operation: "CreateInstances", input: { instanceNames: ["new-1"], availabilityZone: "ap-northeast-1a", blueprintId: "debian_12", bundleId: "nano_3_0" } });
-  assert.deepEqual(changed(), ["StartInstances", "StartInstance", "StartInstances", "StopInstances", "CreateInstances"], "starting stays allowed; other and new instances can be changed");
+  await ec2Call("ReleaseAddress", { AllocationId: "eipalloc-0c1b2c3d4e5f60718" }); // unattached, not protected
+  assert.deepEqual(changed(), ["StartInstances", "StartInstance", "StartInstances", "StopInstances", "CreateInstances", "ReleaseAddress"], "starting stays allowed; other and new instances and free addresses can be changed");
 }
 console.log("aws test passed");

@@ -251,6 +251,9 @@ export function createBootstrapper(deps) {
   // restarts (clean ACPI shutdown) and is always started again, whatever fails on the way.
   async function viaRescue(server, step) {
     if (server.self) throw new Error("This is the Orrery host itself; it is never restarted into the rescue system. Run deploy/enable-ssh.sh on it instead.");
+    if ((deps.protectedIps || []).includes(String(server.host).trim().toLowerCase())) {
+      throw new Error(`${server.host} is a protected machine (ORRERY_PROTECTED_IPS): it is never restarted into the rescue system. Install the key with the paste command instead.`);
+    }
     // Switched off by default: netcup runs rescue on/off as asynchronous tasks that also power the
     // server on and off by themselves, and a mismatch left a production server in rescue once.
     // Checked before ORRERY_SELF_IP: the paste command reboots nothing, so it works without it.

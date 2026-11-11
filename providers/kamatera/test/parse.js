@@ -29,7 +29,7 @@ function fakeKamatera() {
     assert.equal(init.headers.AuthSecret, "sec");
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ method, path: u.pathname + u.search, body });
-    const p = u.pathname;
+    const p = u.pathname.toLowerCase(); // routes as if the API ignored letter case
     if (p === "/service/servers" && method === "GET") return json(200, [
       { id: PROXY, name: "hk-proxy", datacenter: "AS", power: "on" },
       { id: TEST, name: "hk-test", datacenter: "AS", power: "off" },
@@ -124,6 +124,14 @@ assert.deepEqual(guardRequest("POST", "/service/server", { name: "hk-new" }), { 
 assert.deepEqual(guardRequest("POST", "/service/server/info", { name: "hk" }), { serverId: null });
 assert.deepEqual(guardRequest("POST", "/server/snapshot", { id: TEST, create: "snap1" }), { serverId: TEST, powerOn: false });
 assert.deepEqual(guardRequest("GET", "/service/servers"), { serverId: null });
+// Paths are compared case-insensitively, and the checks hold whatever the method.
+assert.throws(() => guardRequest("POST", "/Service/Server/Terminate", { id: TEST }), /kamatera_delete/);
+assert.throws(() => guardRequest("POST", "/SERVICE/SERVER/PASSWORD", { id: TEST }), /credential/);
+assert.throws(() => guardRequest("POST", "/Server/Snapshot", { id: TEST, revert: "snap1" }), /overwrites/);
+assert.deepEqual(guardRequest("POST", "/Service/Server/PowerOff", { id: TEST }), { serverId: TEST, powerOn: false });
+assert.deepEqual(guardRequest("POST", "/Service/Server/PowerOn", { id: TEST }), { serverId: TEST, powerOn: true });
+assert.throws(() => guardRequest("GET", "/service/server/terminate?id=x"), /kamatera_delete/);
+assert.throws(() => guardRequest("GET", "/service/server/poweroff?id=x"), /needs the server's "id"/);
 
 // ---------- redaction and protected IPs ----------
 assert.deepEqual(redactSecrets({ password: "p", commandIds: ["1"], nested: [{ secret: "s", passwordValidate: "p", name: "x" }], empty: "" }), {
@@ -151,9 +159,14 @@ assert.deepEqual(protectedIps({ ORRERY_SELF_IP: "192.0.2.1", ORRERY_PROTECTED_IP
     const r = register({});
     await r.kamatera_query({ path: "/service/queue?id=1234567" });
     await r.kamatera_query({ path: "/service/server/info", body: { id: TEST } });
-    await assert.rejects(r.kamatera_query({ path: "/service/server/poweroff", body: { id: TEST } }), /sends a body only to/);
+    await r.kamatera_query({ path: "/Service/Server/Info", body: { id: TEST } });
+    await assert.rejects(r.kamatera_query({ path: "/service/server/poweroff", body: { id: TEST } }), /changes a server; kamatera_query only reads/);
+    // No GET to an action path either, in any letter case.
+    for (const p of ["/service/server/poweroff", "/service/server/terminate?id=x", "/service/server/password", "/service/server/ssh", "/Service/Server/Reboot", "/server/configure", "/SERVER/NETWORK", "/service/cloneServer"]) {
+      await assert.rejects(r.kamatera_query({ path: p }), /changes a server; kamatera_query only reads/, p);
+    }
     await assert.rejects(r.kamatera_query({ path: "/service/servers", body: {} }), /sends a body only to/);
-    assert.deepEqual(r.calls.map((c) => `${c.method} ${c.path}`), ["GET /service/queue?id=1234567", "POST /service/server/info"]);
+    assert.deepEqual(r.calls.map((c) => `${c.method} ${c.path}`), ["GET /service/queue?id=1234567", "POST /service/server/info", "POST /Service/Server/Info"]);
   }
 
   const t = register({ ORRERY_PROTECTED_IPS: "203.0.113.50" }); // hk-proxy
@@ -166,6 +179,8 @@ assert.deepEqual(protectedIps({ ORRERY_SELF_IP: "192.0.2.1", ORRERY_PROTECTED_IP
     ["/server/configure", { id: PROXY, ram: 512 }],
     ["/server/network", { id: PROXY, disconnect: "eth0" }],
     ["/service/server/suspend", { id: PROXY }],
+    ["/Service/Server/PowerOff", { id: PROXY }],
+    ["/SERVER/configure", { id: PROXY, ram: 512 }],
   ]) {
     await assert.rejects(t.kamatera_api_request({ method: "POST", path: p, body }), refused, p);
   }

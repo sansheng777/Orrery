@@ -27,6 +27,17 @@ const PROVIDER_TOOL = /^(aws|netcup|linode|gcp|aliyun|vultr|digitalocean|kamater
 
 // Without credentials only cloud_providers is offered, and it says why.
 let client = await connect();
+// Instructions tell the model how to work with Orrery; ORRERY_INSTRUCTIONS=off leaves them out.
+assert.match(client.getInstructions() || "", /Start with list_servers/);
+assert.doesNotMatch(client.getInstructions(), /ssh_bootstrap, then/, "the read-only hub role does not mention onboarding");
+{
+  const admin = await connect("admin");
+  assert.match(admin.getInstructions() || "", /orrery-host/);
+  assert.match(admin.getInstructions(), /dashboard\/orrery\.html/);
+  await admin.close();
+  const { instructionsFor } = await import("../src/instructions.js");
+  assert.equal(instructionsFor("admin", { ORRERY_INSTRUCTIONS: "off" }), undefined);
+}
 let { tools } = await client.listTools();
 assert.deepEqual(tools.filter((t) => PROVIDER_TOOL.test(t.name)).map((t) => t.name), ["cloud_providers"]);
 let res = await client.callTool({ name: "cloud_providers", arguments: {} });
@@ -82,7 +93,7 @@ globalThis.fetch = async (url, init = {}) => {
   if (String(url).includes("/servers/8?loadServerLiveInfo=false")) return new Response(JSON.stringify({ id: 8, name: "v2202610000000000008", ipv4Addresses: [{ ip: "198.51.100.99" }] }), { status: 200 });
   return new Response(JSON.stringify({ uuid: "4f8a1c2e-7b3d-4e5f-9a0b-1c2d3e4f5a6b", name: "Server state change", state: "RUNNING" }), { status: 202 });
 };
-process.env.ORRERY_SELF_IP = "198.51.100.99"; // server 8 is the middle server
+process.env.ORRERY_SELF_IP = "198.51.100.99"; // server 8 is the Orrery host
 client = await connect("admin");
 ({ tools } = await client.listTools());
 const names = tools.map((t) => t.name);
@@ -110,7 +121,7 @@ for (const t of tools) {
 res = await client.callTool({ name: "netcup_set_power", arguments: { serverId: 7, state: "ON", option: "RESET" } });
 assert.ok(!res.isError, res.content?.[0]?.text);
 assert.equal(res.structuredContent.task.state, "RUNNING");
-assert.deepEqual(scpCalls, ["GET /api/v1/servers/7?loadServerLiveInfo=false", "PATCH /api/v1/servers/7?stateOption=RESET"], "looks the server up first: is it the middle server?");
+assert.deepEqual(scpCalls, ["GET /api/v1/servers/7?loadServerLiveInfo=false", "PATCH /api/v1/servers/7?stateOption=RESET"], "looks the server up first: is it the Orrery host?");
 res = await client.callTool({ name: "netcup_reinstall", arguments: { serverId: 7, imageFlavourId: 3, confirmServerName: "web-01", customScript: "echo secret-value" } });
 assert.ok(res.isError && /Refusing/.test(res.content[0].text), "reinstall needs the server's name");
 res = await client.callTool({ name: "netcup_api_request", arguments: { method: "POST", path: "/api/v1/servers/7/image", body: {} } });
@@ -135,9 +146,9 @@ for (const [name, args] of [
   ["netcup_api_request", { method: "PATCH", path: "/api/v1/servers/8", body: { state: "OFF" } }],
 ]) {
   res = await client.callTool({ name, arguments: args });
-  assert.ok(res.isError && /middle server/.test(res.content[0].text), `${name} refuses the middle server`);
+  assert.ok(res.isError && /Orrery host/.test(res.content[0].text), `${name} refuses the Orrery host`);
 }
-assert.ok(!scpCalls.some((c) => /servers\/8(\?stateOption|\/rescuesystem|$)/.test(c) && !c.startsWith("GET")), "nothing was sent to the middle server");
+assert.ok(!scpCalls.some((c) => /servers\/8(\?stateOption|\/rescuesystem|$)/.test(c) && !c.startsWith("GET")), "nothing was sent to the Orrery host");
 await client.close();
 delete process.env.ORRERY_SELF_IP;
 globalThis.fetch = realFetch;
@@ -191,8 +202,18 @@ assert.equal(match(["198.51.100.99"]), null);
   assert.equal((await post("/mcp/not-the-token", { authorization: `Bearer ${token}` })).status, 404, "a Bearer header does not rescue a wrong path token");
   assert.equal((await post("/elsewhere", { authorization: `Bearer ${token}` })).status, 404, "other paths stay closed");
   assert.equal((await fetch(`http://127.0.0.1:${port}/mcp`, { headers: { authorization: `Bearer ${token}` } })).status, 405, "only POST");
+  const big = await fetch(`http://127.0.0.1:${port}/mcp`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: "x".repeat(1024 * 1024 + 10) });
+  assert.equal(big.status, 413, "an oversized body gets a 413 the client can read");
   httpServer.closeAllConnections();
   await new Promise((resolve) => httpServer.close(resolve));
+}
+
+// Audit redaction: by field name, and the value of key/value pairs whose key looks secret.
+{
+  const { redact } = await import("../src/audit.js");
+  assert.deepEqual(redact({ root_pass: "p", nested: { apiToken: "t" }, keep: 1 }), { root_pass: "[redacted]", nested: { apiToken: "[redacted]" }, keep: 1 });
+  assert.deepEqual(redact({ Tags: [{ Key: "db_password", Value: "p" }, { Key: "Name", Value: "web" }] }), { Tags: [{ Key: "db_password", Value: "[redacted]" }, { Key: "Name", Value: "web" }] });
+  assert.deepEqual(redact({ items: [{ key: "api-token", value: "t" }] }), { items: [{ key: "api-token", value: "[redacted]" }] });
 }
 
 fs.rmSync(dataDir, { recursive: true, force: true });

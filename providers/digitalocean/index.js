@@ -181,7 +181,8 @@ export function guardRequest(method, p, body) {
 }
 
 // Every API answer passes through here before it reaches the chat: managed databases return passwords and
-// connection URIs with the password inside, Kafka users a private key, new keys their secret.
+// connection URIs with the password inside, Kafka users a private key, new keys their secret, and a
+// Functions namespace (an object with api_host or namespace) its access key in a plain `key` field.
 const SECRET_FIELDS = /(password|passwd|secret|secretkey|privatekey|token|kubeconfig|clientkeydata)$/i;
 const SPACES_KEY_ID = /^[A-Z0-9]{16,40}$/; // a Spaces access key id is shown in the control panel, not a secret
 const URI_PASSWORD = /^([a-z][\w+.-]*:\/\/[^/\s:@]*:)\S*@/i;
@@ -197,11 +198,11 @@ export const redactSecrets = (v) =>
     : typeof v === "string"
       ? redactString(v)
       : v && Object.getPrototypeOf(v) === Object.prototype
-        ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, isSecretField(k, x) ? "[redacted]" : redactSecrets(x)]))
+        ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, isSecretField(k, x) || (k === "key" && typeof x === "string" && x !== "" && ("api_host" in v || "namespace" in v)) ? "[redacted]" : redactSecrets(x)]))
         : v;
 
-// ORRERY_SELF_IP (the middle server) plus ORRERY_PROTECTED_IPS (comma list, such as the user's
-// proxy): Droplets a chat may power on but never shut down, reboot, delete, rebuild or change.
+// ORRERY_SELF_IP (the Orrery host) plus ORRERY_PROTECTED_IPS (comma list of other machines that must
+// stay up): Droplets a chat may power on but never shut down, reboot, delete, rebuild or change.
 export const protectedIps = (env = process.env) =>
   [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((ip) => String(ip || "").trim().toLowerCase()).filter(Boolean))];
 
@@ -287,7 +288,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   add("digitalocean_power", {
     title: "Power on, shut down or reboot a Droplet",
     description:
-      "power_on a stopped Droplet; shutdown (clean, from the OS), power_off (hard), reboot (clean) or power_cycle (hard) a running one. Returns the action; follow it with digitalocean_api_request GET /actions/{actionId}. A Droplet with a protected IP can only be powered on.",
+      "power_on a stopped Droplet; shutdown (clean, from the OS), power_off (hard), reboot (clean) or power_cycle (hard) a running one. Returns the action; follow it with digitalocean_query /actions/{actionId}. A Droplet with a protected IP can only be powered on.",
     inputSchema: { dropletId: DROPLET_ID, action: z.enum(["power_on", "shutdown", "power_off", "reboot", "power_cycle"]) },
     annotations: DESTRUCTIVE,
   }, adminTool("digitalocean_power", async ({ dropletId, action }) => {
@@ -308,7 +309,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   add("digitalocean_rebuild", {
     title: "Rebuild a Droplet",
     description:
-      "Reinstall a Droplet from an image, erasing its disk; it keeps its id, IPs and size. confirmName must repeat its name. image is a public image slug (e.g. \"debian-12-x64\", \"ubuntu-24-04-x64\"; see GET /images?type=distribution) or an image id. Droplets with a protected IP are refused. Returns the action; follow it with GET /actions/{actionId}, then check the connector can still log in as root.",
+      "Reinstall a Droplet from an image, erasing its disk; it keeps its id, IPs and size. confirmName must repeat its name. image is a public image slug (e.g. \"debian-12-x64\", \"ubuntu-24-04-x64\"; see GET /images?type=distribution) or an image id. Droplets with a protected IP are refused. Returns the action; follow it with digitalocean_query /actions/{actionId}, then check the connector can still log in as root.",
     inputSchema: { dropletId: DROPLET_ID, confirmName: z.string(), image: z.union([z.string(), z.number().int().positive()]) },
     annotations: DESTRUCTIVE,
   }, adminTool("digitalocean_rebuild", async ({ dropletId, confirmName, image }) => {

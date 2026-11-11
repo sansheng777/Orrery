@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { API, loadConfig, createApi, instances, toInstance, assertLabel, guardRequest, normalizePath, protectedIps, register as linodeRegister } from "../index.js";
+import { API, loadConfig, createApi, instances, toInstance, assertLabel, guardRequest, normalizePath, protectedIps, assertNotProtected, assertIpsNotProtected, register as linodeRegister } from "../index.js";
 
 const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const fixture = (f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
@@ -22,6 +22,8 @@ function fakeLinode() {
     calls.push({ method, path: p + u.search, body: init.body ? JSON.parse(init.body) : undefined });
     if (p === "/linode/instances" && method === "GET") return json(200, fixture(`instances-page${u.searchParams.get("page")}.json`));
     if (p === "/linode/instances/61234567" && method === "GET") return json(200, fixture("instances-page1.json").data[0]);
+    if (p === "/linode/instances/61234999" && method === "GET") return json(200, fixture("instances-page2.json").data[0]);
+    if (/^\/networking\/(ips|ipv4)\/(assign|share)$/.test(p) || /\/(clone|restore)$/.test(p)) return json(200, {});
     if (p.endsWith("/rebuild")) return json(400, fixture("error-400.json"));
     if (/^\/linode\/instances\/61234567\/(reboot|boot)$/.test(p)) return json(200, {});
     return json(404, { errors: [{ reason: "Not found" }] });
@@ -60,7 +62,7 @@ assert.deepEqual(res.instances[0], {
   diskMB: 25600,
   transferGB: 1000,
   ipv4: ["203.0.113.10", "192.168.130.5"],
-  ipv6: "2600:3c18::f03c:94ff:fe12:3456/128",
+  ipv6: "2001:db8:18::f03c:94ff:fe12:3456/128",
   tags: ["proxy"],
   backups: false,
   created: "2026-03-02T08:12:44",
@@ -76,6 +78,8 @@ await assert.rejects(api.request("POST", "/linode/instances/61234567/rebuild", {
 await assert.rejects(api.request("GET", "/linode/../account"), /Invalid Linode API path/);
 await assert.rejects(api.request("PATCH", "/linode/instances"), /Unsupported method/);
 assert.deepEqual(await api.request("POST", "/linode/instances/61234567/reboot"), {});
+await api.request("GET", "/linode/instances/61234567", { body: { label: "x" } });
+assert.equal(f.calls.at(-1).body, undefined, "a GET carries no body");
 
 // ---------- label confirmation ----------
 await assert.rejects(assertLabel(api, 61234567, "fra-db"), /Refusing: confirmLabel must be "tokyo-proxy"/);
@@ -89,7 +93,7 @@ assert.throws(() => guardRequest("POST", "/account/cancel"), /not offered/);
 assert.throws(() => guardRequest("DELETE", "/linode/instances/61234567/disks/9"), /disk erases its data/);
 assert.throws(() => guardRequest("POST", "/linode/instances/61234567/backups/77/restore", { linode_id: 61234568, overwrite: true }), /overwrite erases every disk/);
 assert.doesNotThrow(() => guardRequest("POST", "/linode/instances/61234567/backups/77/restore", { linode_id: 61234568, overwrite: false }));
-for (const [method, p] of [["POST", "/profile/tokens"], ["POST", "/object-storage/keys"], ["GET", "/databases/mysql/instances/9/credentials"], ["GET", "/databases/postgresql/instances/9/credentials/"], ["GET", "/lke/clusters/5/kubeconfig"], ["POST", "/account/oauth-clients"], ["POST", "/profile/tfa-enable"]]) {
+for (const [method, p] of [["POST", "/profile/tokens"], ["POST", "/object-storage/keys"], ["GET", "/databases/mysql/instances/9/credentials"], ["GET", "/databases/postgresql/instances/9/credentials/"], ["GET", "/lke/clusters/5/kubeconfig"], ["POST", "/account/oauth-clients"], ["POST", "/profile/tfa-enable"], ["POST", "/account/child-accounts/A1BC2DEF-0000-4000-8000-000000000001/token"]]) {
   assert.throws(() => guardRequest(method, p), /must not end up in the chat/, `${method} ${p}`);
 }
 assert.doesNotThrow(() => guardRequest("GET", "/profile/tokens"), "listing tokens shows no secrets");
@@ -150,6 +154,26 @@ assert.deepEqual(f.calls, ["GET"]);
   await t.linode_power({ linodeId: 61234567, action: "boot" });
   await t.linode_api_request({ method: "POST", path: "/linode/instances/61234567/boot" });
   assert.deepEqual(t.calls.filter((c) => c.method !== "GET").map((c) => c.path), ["/linode/instances/61234567/boot", "/linode/instances/61234567/boot"], "booting stays allowed");
+  // Its IPs are not moved or shared away, and it is not the target of a clone or backup restore.
+  const ipCalls = t.calls.length;
+  await assert.rejects(t.linode_api_request({ method: "POST", path: "/networking/ips/assign", body: { region: "ap-northeast", assignments: [{ address: "203.0.113.10", linode_id: 61234999 }] } }), /203\.0\.113\.10 is a protected IP/);
+  await assert.rejects(t.linode_api_request({ method: "POST", path: "/networking/ipv4/assign", body: { region: "ap-northeast", assignments: [{ address: "203.0.113.10/32", linode_id: 61234999 }] } }), /protected IP/);
+  await assert.rejects(t.linode_api_request({ method: "POST", path: "/networking/ips/share", body: { linode_id: 61234999, ips: ["203.0.113.10"] } }), /203\.0\.113\.10 is a protected IP/);
+  await assert.rejects(t.linode_api_request({ method: "POST", path: "/networking/ipv4/share", body: { linode_id: 61234999, ips: ["203.0.113.10"] } }), /protected IP/);
+  assert.equal(t.calls.length, ipCalls, "protected addresses are refused before any request");
+  await assert.rejects(t.linode_api_request({ method: "POST", path: "/networking/ips/assign", body: { region: "ap-northeast", assignments: [{ address: "198.51.100.5", linode_id: 61234567 }] } }), /Linode 61234567 \(tokyo-proxy\) has the protected IP/);
+  await assert.rejects(t.linode_api_request({ method: "POST", path: "/linode/instances/61234999/clone", body: { linode_id: 61234567 } }), /Linode 61234567 \(tokyo-proxy\) has the protected IP/);
+  await assert.rejects(t.linode_api_request({ method: "POST", path: "/linode/instances/61234999/backups/77/restore", body: { linode_id: 61234567, overwrite: false } }), /protected IP/);
+  assert.deepEqual(t.calls.slice(ipCalls).filter((c) => c.method !== "GET"), [], "nothing was sent for the protected Linode");
+  await t.linode_api_request({ method: "POST", path: "/networking/ips/share", body: { linode_id: 61234999, ips: ["198.51.100.5"] } });
+  await t.linode_api_request({ method: "POST", path: "/linode/instances/61234999/clone", body: { region: "ap-northeast", type: "g6-nanode-1" } });
+  assert.deepEqual(t.calls.slice(ipCalls).filter((c) => c.method !== "GET").map((c) => c.path), ["/networking/ips/share", "/linode/instances/61234999/clone"], "other addresses and Linodes can be changed");
+  assert.doesNotThrow(() => assertIpsNotProtected("GET", "/networking/ips/assign", { assignments: [{ address: "203.0.113.10" }] }, ["203.0.113.10"]));
+
+  // IPv6: the Linode's SLAAC address (without its /128) is compared too.
+  const v6 = register({ ORRERY_PROTECTED_IPS: "2001:DB8:18::F03C:94FF:FE12:3456" });
+  await assert.rejects(v6.linode_power({ linodeId: 61234567, action: "shutdown" }), /Linode 61234567 \(tokyo-proxy\) has the protected IP 2001:db8:18::f03c:94ff:fe12:3456/);
+  assert.doesNotThrow(() => assertNotProtected({ id: 1, label: "x", ipv4: [], ipv6: "2001:db8:18::1/128" }, ["2001:db8:18::f03c:94ff:fe12:3456"]));
   const other = register({ ORRERY_PROTECTED_IPS: "198.51.100.1" });
   assert.deepEqual(await other.linode_power({ linodeId: 61234567, action: "reboot" }), { ok: true, linodeId: 61234567, action: "reboot" });
   const none = register({});

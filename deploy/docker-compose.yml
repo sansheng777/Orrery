@@ -13,6 +13,7 @@ services:
       ORRERY_SELF_IP: ${ORRERY_SELF_IP:-}                  # this machine's public IP (enable-ssh.sh sets it); it is never stopped, rebooted or reinstalled
       ORRERY_PROTECTED_IPS: ${ORRERY_PROTECTED_IPS:-}      # more machines a chat may start but never stop or delete (comma-separated IPs)
       ORRERY_GCP_SSH_USER: ${ORRERY_GCP_SSH_USER:-orrery}  # login user onboarding creates on Google Cloud instances
+      ORRERY_INSTRUCTIONS: ${ORRERY_INSTRUCTIONS:-on}           # usage instructions sent to the AI client at connect; off leaves them out
       ORRERY_TOKEN: ${ORRERY_TOKEN:-}                      # optional: a connector token of 32+ characters instead of the generated data/token
     volumes:
       - ./data:/data              # connector token, cloud credentials, the SSH key (data/keys) and the audit log

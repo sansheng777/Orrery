@@ -70,7 +70,7 @@ export function createApi(config, fetchImpl = fetch, { retryWaitMs = 1000 } = {}
         json = text ? JSON.parse(text) : null;
       } catch {}
       if (res.ok) return json ?? (text || {});
-      if ((method === "GET" || READ_POSTS.has(p.split("?")[0])) && attempt === 0 && RETRY_STATUS.has(res.status)) {
+      if ((method === "GET" || READ_POSTS.has(p.split("?")[0].toLowerCase())) && attempt === 0 && RETRY_STATUS.has(res.status)) {
         await sleep(retryWaitMs);
         continue;
       }
@@ -154,28 +154,31 @@ export const redactSecrets = (v) =>
       ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, SECRET_FIELDS.test(k) && x != null && x !== "" ? "[redacted]" : redactSecrets(x)]))
       : v;
 
-// Calls that act on existing servers, as POST paths: the body must name one server by "id" (a "name" is a
-// regular expression and may hit several), and a protected server may only be read or powered on.
+// Calls that act on existing servers: the body must name one server by "id" (a "name" is a regular
+// expression and may hit several), and a protected server may only be read or powered on. Matched in
+// lower case (paths are compared case-insensitively) and whatever the method.
 const SERVER_ACTIONS = /^\/(service\/server\/(poweron|poweroff|reboot|terminate|password|ssh|sshkey|rename|suspend|resume)|server\/(description|snapshot|network|disk|configure|tags|hdlib))$/;
+// Paths that change something, whatever the method: kamatera_query never sends to them.
+export const isChangePath = (bare) => SERVER_ACTIONS.test(bare.toLowerCase()) || bare.toLowerCase() === "/service/cloneserver";
 
 // Requests the generic tool refuses: terminating goes through kamatera_delete (it asks for the name);
 // reverting a snapshot overwrites the disk; setting a root password or opening a console session would put a
-// credential in the chat. Those are left to the website.
+// credential in the chat. Those are left to the website. The checks hold for GET too, in case the API
+// answers an action path on GET.
 export function guardRequest(method, p, body) {
-  const bare = normalizePath(p).split("?")[0];
-  if (method !== "POST") return { serverId: null };
+  const bare = normalizePath(p).split("?")[0].toLowerCase();
   if (bare === "/service/server/terminate") throw new Error("Deleting a server goes through kamatera_delete, which asks for its name.");
   if (/^\/service\/server\/(password|ssh|sshkey)$/.test(bare)) throw new Error(`POST ${bare} sets or hands out a credential, which must not end up in the chat; do it in the Kamatera website.`);
   if (bare === "/server/snapshot" && body?.revert) throw new Error("Reverting a snapshot overwrites the server's disk; do it in the Kamatera website.");
-  if (bare === "/service/cloneServer") return { serverId: null };
+  if (bare === "/service/cloneserver") return { serverId: null };
   if (!SERVER_ACTIONS.test(bare)) return { serverId: null };
   if (body?.name !== undefined) throw new Error(`Name the server by "id", not "name": Kamatera treats a name as a regular expression that can match several servers.`);
   if (!SERVER_ID.test(String(body?.id ?? ""))) throw new Error(`POST ${bare} needs the server's "id" (from kamatera_servers).`);
   return { serverId: String(body.id), powerOn: bare === "/service/server/poweron" || bare === "/service/server/resume" };
 }
 
-// ORRERY_SELF_IP (the middle server) plus ORRERY_PROTECTED_IPS (comma list, such as the user's
-// proxy): servers a chat may start but never stop, reboot, delete or change.
+// ORRERY_SELF_IP (the Orrery host) plus ORRERY_PROTECTED_IPS (comma list of other machines that must
+// stay up): servers a chat may start but never stop, reboot, delete or change.
 export const protectedIps = (env = process.env) =>
   [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((a) => String(a || "").trim().toLowerCase()).filter(Boolean))];
 
@@ -250,7 +253,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
     description:
       "Read-only twin of kamatera_api_request: GET any path (/service/servers, /service/server?datacenter=1, /service/server?capabilities=1&datacenter=AS, /service/server?images=1&datacenter=AS, /service/queue?id=<commandId>, /svc/queue), or POST {\"id\"} to the read-only " +
       [...READ_POSTS].join(", ") +
-      " (/server/report takes {\"id\", \"year\", \"month\"} and gives traffic and usage; /server/statistics takes {\"id\", \"startdate\", \"enddate\", \"period\"}). Changes nothing.",
+      " (/server/report takes {\"id\", \"year\", \"month\"} and gives traffic and usage; /server/statistics takes {\"id\", \"startdate\", \"enddate\", \"period\"}). Server action paths (power, terminate, password, rename...) are refused whatever the method. Changes nothing.",
     inputSchema: {
       path: z.string().regex(/^\//, "path starts with /").describe("e.g. /service/servers"),
       body: z.record(z.string(), z.any()).optional().describe("only for the read-only POST endpoints"),
@@ -258,7 +261,8 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
     annotations: READ,
   }, tool(async ({ path: p, body }) => {
     const bare = normalizePath(p).split("?")[0];
-    if (READ_POSTS.has(bare)) return request("POST", p, body || {});
+    if (READ_POSTS.has(bare.toLowerCase())) return request("POST", p, body || {});
+    if (isChangePath(bare)) throw new Error(`${bare} changes a server; kamatera_query only reads (use kamatera_power or kamatera_api_request).`);
     if (body !== undefined) throw new Error(`kamatera_query sends a body only to ${[...READ_POSTS].join(", ")}.`);
     return request("GET", p);
   }));

@@ -182,13 +182,13 @@ export function applyLabel(s, labels = {}) {
   return { ...s, ...(l.label ? { name: l.label, originalName: s.name } : {}), tags, roleTags: l.tags || [], ...(l.note ? { note: l.note } : {}) };
 }
 
-// The middle server first, so it is always the first thing you see.
+// The Orrery host first, so it is always the first thing you see.
 const selfFirst = (a, b) => Number(!!b.self) - Number(!!a.self);
 
 export function createDiscovery({ env = process.env, dataDir = DATA_DIR, providers = { aws, netcup, linode, gcp, aliyun, vultr, digitalocean, kamatera }, now = () => Date.now() } = {}) {
   const overridesFile = path.join(dataDir, "discovered.json");
   const labelsFile = path.join(dataDir, "labels.json");
-  const selfIp = env.ORRERY_SELF_IP || null;
+  const selfIp = String(env.ORRERY_SELF_IP || "").trim().toLowerCase() || null;
   let cache = null; // { at, value } of the last finished listing
   let pending = null; // { gen, promise } of the listing being fetched
   let gen = 0; // bumped by every invalidation, so a fetch started before one is not kept
@@ -232,7 +232,6 @@ export function createDiscovery({ env = process.env, dataDir = DATA_DIR, provide
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(overridesFile + ".tmp", JSON.stringify(all, null, 2) + "\n", { mode: 0o600 });
     fs.renameSync(overridesFile + ".tmp", overridesFile);
-    invalidate();
   }
 
   // Each provider's last successful listing ({ at, servers }). When a refresh fails (API down, expired
@@ -354,7 +353,11 @@ export function createDiscovery({ env = process.env, dataDir = DATA_DIR, provide
     const ignored = extra.filter((d) => overrides[d.id]?.ignored).map(({ id, name, host, source }) => ({ id, name, host, source }));
     // The machine Orrery runs on carries the orrery-host tag, whichever provider it was found at.
     const hostTag = (s) => (s.self && !(s.tags || []).includes("orrery-host") ? { ...s, tags: [...(s.tags || []), "orrery-host"] } : s);
-    const servers = [...saved, ...extra.filter((d) => !overrides[d.id]?.ignored)].map((s) => applyLabel(hostTag(s), labels)).sort(selfFirst);
+    // A saved server that covers the Orrery host (same IP, e.g. to override its user or port) is still the host.
+    const hostIds = new Set(found.filter((d) => d.self).map((d) => match([d.host])?.id).filter(Boolean));
+    const isHost = (s) => hostIds.has(s.id) || (!!selfIp && String(s.host).toLowerCase() === selfIp);
+    const savedMarked = saved.map((s) => (isHost(s) ? { ...s, self: true } : s));
+    const servers = [...savedMarked, ...extra.filter((d) => !overrides[d.id]?.ignored)].map((s) => applyLabel(hostTag(s), labels)).sort(selfFirst);
     return { servers, ignored, errors };
   }
 

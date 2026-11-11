@@ -1,0 +1,12 @@
+<DescribeAddressesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+  <requestId>5f1c2d3e-0000-4000-8000-00000000ad02</requestId>
+  <addressesSet>
+    <item>
+      <publicIp>198.51.100.88</publicIp>
+      <allocationId>eipalloc-0b1b2c3d4e5f60718</allocationId>
+      <domain>vpc</domain>
+      <instanceId>i-0123456789abcdef0</instanceId>
+      <associationId>eipassoc-0b1b2c3d4e5f60718</associationId>
+    </item>
+  </addressesSet>
+</DescribeAddressesResponse>

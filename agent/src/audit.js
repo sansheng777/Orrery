@@ -6,10 +6,19 @@ import { DATA_DIR } from "./inventory.js";
 
 const SECRET = /pass(word)?|secret|token|private|customScript/i;
 
+const PAIR_KEY = ["key", "Key", "name", "Name"];
+const PAIR_VALUE = ["value", "Value", "values", "Values"];
+
+// Redacts by field name, and also the value of key/value pairs whose key looks secret
+// (AWS tags {Key, Value}, metadata items {key, value}, environment entries {name, value}).
 export function redact(value, key = "") {
   if (SECRET.test(key)) return "[redacted]";
   if (Array.isArray(value)) return value.map((v) => redact(v));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redact(v, k)]));
+  if (value && typeof value === "object") {
+    const pairKey = PAIR_KEY.map((k) => value[k]).find((k) => typeof k === "string");
+    const secretPair = pairKey !== undefined && SECRET.test(pairKey);
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, secretPair && PAIR_VALUE.includes(k) ? "[redacted]" : redact(v, k)]));
+  }
   return value;
 }
 

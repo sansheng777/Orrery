@@ -39,6 +39,7 @@ function fakeDo() {
       return json(201, { action: { id: 2900000001, status: "in-progress", type: body?.type, resource_id: Number(p.split("/")[2]) || null } });
     }
     if (p === "/databases/9cc10173" && method === "GET") return json(200, fixture("database.json"));
+    if (p === "/functions/namespaces" && method === "GET") return json(200, { namespaces: [{ api_host: "https://faas-sgp1-example.doserverless.co", namespace: "fn-1", uuid: "u-1", label: "fns", key: "fnkey-secret" }] });
     if (p === "/firewalls/fw-proxy" && method === "GET") return json(200, { firewall: { id: "fw-proxy", droplet_ids: [PROXY], tags: [] } });
     if (p === "/firewalls/fw-proxytag" && method === "GET") return json(200, { firewall: { id: "fw-proxytag", droplet_ids: [], tags: ["proxy"] } });
     if (p === "/firewalls/fw-test" && method === "GET") return json(200, { firewall: { id: "fw-test", droplet_ids: [TEST], tags: [] } });
@@ -252,6 +253,11 @@ assert.deepEqual(f.calls, ["GET"]);
     token_id: "tok-1",
     password: "",
   });
+  // A Functions namespace carries its access key in a plain `key` field; other `key`s are left alone.
+  assert.deepEqual(
+    redactSecrets({ namespaces: [{ api_host: "https://faas-sgp1-example.doserverless.co", namespace: "fn-1", label: "x", key: "fnkey" }], namespace: { namespace: "fn-2", uuid: "u", key: "fnkey2" }, record: { key: "env", value: "prod" } }),
+    { namespaces: [{ api_host: "https://faas-sgp1-example.doserverless.co", namespace: "fn-1", label: "x", key: "[redacted]" }], namespace: { namespace: "fn-2", uuid: "u", key: "[redacted]" }, record: { key: "env", value: "prod" } },
+  );
 }
 
 // ---------- register: tools per role, protected IPs, redaction in the generic tool ----------
@@ -333,6 +339,8 @@ assert.deepEqual(f.calls, ["GET"]);
   const db = await t.digitalocean_api_request({ method: "GET", path: "/databases/9cc10173" });
   assert.equal(db.database.connection.password, "[redacted]", "the generic tool redacts its answers");
   assert.doesNotMatch(JSON.stringify(db), /AVNS_/);
+  assert.equal((await t.digitalocean_api_request({ method: "GET", path: "/functions/namespaces" })).namespaces[0].key, "[redacted]", "a Functions namespace key never reaches the chat");
+  assert.equal((await t.digitalocean_query({ path: "/functions/namespaces" })).namespaces[0].key, "[redacted]", "nor through digitalocean_query");
 
   const other = register({ ORRERY_PROTECTED_IPS: "198.51.100.1" });
   assert.equal((await other.digitalocean_power({ dropletId: PROXY, action: "reboot" })).action, "reboot");

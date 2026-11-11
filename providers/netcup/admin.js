@@ -2,6 +2,7 @@
 // system, reinstall, rDNS, tasks, and any other SCP REST API endpoint. Only the admin agent registers
 // these; the dashboard's agent keeps the GET-only tools in index.js. Endpoints follow netcup's OpenAPI
 // spec (https://www.servercontrolpanel.de/scp-core/api/v1/openapi), which is also checked at run time.
+import net from "node:net";
 import { API, SCP, accessToken, toServer } from "./index.js";
 
 // Built lazily: index.js imports this module, so its constants are not set yet at load time.
@@ -9,6 +10,12 @@ const userinfoUrl = () => `${SCP}/realms/scp/protocol/openid-connect/userinfo`;
 const TIMEOUT_MS = 30000;
 const SPEC_TTL_MS = 3600 * 1000;
 export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+
+// Kept per credentials (keyed like the token sessions in index.js) and shared by every request the agent
+// serves: the HTTP connector builds the tools, and so createScp, for each request.
+const specCache = new Map(); // config.file ?? refresh token -> { at, version, endpoints }
+const userIdCache = new Map(); // config.file ?? refresh token -> SCP user id
+const cacheKey = (config) => config.file ?? config.refreshToken;
 
 export class ScpError extends Error {
   constructor(status, body, method, pathAndQuery) {
@@ -31,7 +38,8 @@ export function createScp(getConfig, fetchImpl = fetch, env = process.env) {
       const headers = { authorization: `Bearer ${token}`, accept: "application/json" };
       // netcup rejects a POST/PUT/PATCH without a Content-Type (400 "must be 'type/subtype'"), even
       // for actions that take no input, such as turning the rescue system on: send an empty object.
-      const sendsBody = body !== undefined || ["POST", "PUT", "PATCH"].includes(method);
+      // A GET carries no body.
+      const sendsBody = method !== "GET" && (body !== undefined || ["POST", "PUT", "PATCH"].includes(method));
       if (sendsBody) headers["content-type"] = contentType;
       const res = await fetchImpl(API + pathAndQuery, {
         method,
@@ -51,28 +59,32 @@ export function createScp(getConfig, fetchImpl = fetch, env = process.env) {
   }
 
   // Endpoints under /users/{userId} need the SCP user id (not the customer number).
-  let userId = env.NETCUP_USER_ID || null;
   async function getUserId() {
-    if (userId) return userId;
+    if (env.NETCUP_USER_ID) return String(env.NETCUP_USER_ID);
+    const key = cacheKey(getConfig());
+    if (userIdCache.has(key)) return userIdCache.get(key);
+    const found = (id) => (userIdCache.set(key, String(id)), String(id));
     try {
       const token = await accessToken(getConfig(), fetchImpl);
       const res = await fetchImpl(userinfoUrl(), { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(TIMEOUT_MS) });
       const info = res.ok ? await res.json() : {};
-      if (/^\d+$/.test(String(info.id ?? ""))) return (userId = String(info.id));
+      if (/^\d+$/.test(String(info.id ?? ""))) return found(info.id);
     } catch {}
     // Fallback: every task records the user who started it.
     const { body } = await request("GET", "/api/v1/tasks?limit=1&offset=0");
     const id = Array.isArray(body) ? body[0]?.executingUser?.id : null;
-    if (id) return (userId = String(id));
+    if (id) return found(id);
     throw new Error("Could not determine the SCP user id. Set NETCUP_USER_ID to your SCP user id.");
   }
 
-  let spec = null;
   async function getSpec() {
-    if (spec && Date.now() - spec.at < SPEC_TTL_MS) return spec;
+    const key = cacheKey(getConfig());
+    const hit = specCache.get(key);
+    if (hit && Date.now() - hit.at < SPEC_TTL_MS) return hit;
     const { body } = await request("GET", "/api/v1/openapi");
     if (!body?.paths) throw new Error("Could not load netcup's OpenAPI spec");
-    spec = { at: Date.now(), version: body.info?.version || null, endpoints: endpointsOf(body) };
+    const spec = { at: Date.now(), version: body.info?.version || null, endpoints: endpointsOf(body) };
+    specCache.set(key, spec);
     return spec;
   }
 
@@ -115,26 +127,55 @@ export async function assertServerName(scp, serverId, confirm) {
   return s;
 }
 
-// ORRERY_SELF_IP (the middle server) plus ORRERY_PROTECTED_IPS (comma list, such as the user's
+// ORRERY_SELF_IP (the Orrery host) plus ORRERY_PROTECTED_IPS (comma list, such as the user's
 // proxy): machines a chat may start but never stop, restart, rescue, reinstall, revert or reconfigure.
 export const protectedIps = (env = process.env) =>
   [...new Set([env.ORRERY_SELF_IP, ...String(env.ORRERY_PROTECTED_IPS || "").split(/[\s,]+/)].map((ip) => String(ip || "").trim().toLowerCase()).filter(Boolean))];
 
 const NO_SELF_IP =
-  "Refusing: the middle server is not known, so no netcup server is stopped, restarted, rescued, reinstalled, reverted or reconfigured from a chat. Set ORRERY_SELF_IP (deploy/enable-ssh.sh).";
+  "Refusing: the Orrery host is not known, so no netcup server is stopped, restarted, rescued, reinstalled, reverted or reconfigured from a chat. Set ORRERY_SELF_IP (deploy/enable-ssh.sh).";
 
-// The middle server runs this connector: stopping, restarting, rescuing, reinstalling or reverting it
-// would cut Claude off mid-call with no way back from a chat. Those are refused for it (selfIp is
+// The Orrery host is recognized by its IPv4 address; any other ORRERY_SELF_IP counts as unset.
+function selfIpRefusal(selfIp) {
+  if (!selfIp) return NO_SELF_IP;
+  if (!net.isIPv4(selfIp)) {
+    return `Refusing: ORRERY_SELF_IP (${selfIp}) is not an IPv4 address, so the Orrery host cannot be recognized among the netcup servers and it counts as unset: no netcup server is stopped, restarted, rescued, reinstalled, reverted or reconfigured from a chat. Set ORRERY_SELF_IP to the Orrery host's public IPv4 address (deploy/enable-ssh.sh).`;
+  }
+  return null;
+}
+
+// The first protected entry a server carries: an IPv4 address exactly, an IPv6 address (or prefix,
+// without its length) inside one of the server's IPv6 prefixes.
+export function protectedIpOf(s, ips) {
+  const v4 = s.ipv4.find((a) => ips.includes(a));
+  if (v4) return v4;
+  for (const entry of ips) {
+    const ip = entry.split("/")[0];
+    if (!net.isIPv6(ip)) continue;
+    for (const prefix of s.ipv6) {
+      const [base, len] = prefix.split("/");
+      if (!net.isIPv6(base)) continue;
+      const block = new net.BlockList();
+      block.addSubnet(base, Number(len ?? 64), "ipv6");
+      if (block.check(ip, "ipv6")) return entry;
+    }
+  }
+  return null;
+}
+
+// The Orrery host runs this connector: stopping, restarting, rescuing, reinstalling or reverting it
+// would cut the assistant off mid-call with no way back from a chat. Those are refused for it (selfIp is
 // ORRERY_SELF_IP, set by deploy/enable-ssh.sh) and for the other protected IPs, and left to
 // the SCP website. Without ORRERY_SELF_IP no server is known to be safe, so all are refused.
 export async function assertNotSelf(scp, serverId, selfIp, otherIps = []) {
-  if (!selfIp) throw new Error(NO_SELF_IP);
+  const refusal = selfIpRefusal(selfIp);
+  if (refusal) throw new Error(refusal);
   const { body } = await scp.request("GET", `/api/v1/servers/${Number(serverId)}?loadServerLiveInfo=false`);
   const s = toServer(body);
   if (s.ipv4.includes(selfIp)) {
-    throw new Error(`Refusing: server ${serverId} (${s.name}) is the middle server that runs this connector. Stopping, restarting, rescuing, reinstalling, reverting or reconfiguring it would cut Claude off; do that in the netcup SCP website.`);
+    throw new Error(`Refusing: server ${serverId} (${s.name}) is the Orrery host that runs this connector. Stopping, restarting, rescuing, reinstalling, reverting or reconfiguring it would cut the assistant off; do that in the netcup SCP website.`);
   }
-  const ip = s.ipv4.find((a) => otherIps.includes(a));
+  const ip = protectedIpOf(s, otherIps);
   if (ip) throw new Error(`Refusing: server ${serverId} (${s.name}) has the protected IP ${ip} (ORRERY_PROTECTED_IPS) and must keep running; do that in the netcup SCP website.`);
 }
 
@@ -147,15 +188,16 @@ export const redactPasswords = (v) =>
       : v;
 
 // 202 responses carry a TaskInfo for the asynchronous operation; keep the useful part.
+// Passwords are redacted here, so no tool that summarizes a result can return one.
 export function summarize({ status, body }) {
   if (body && typeof body === "object" && body.uuid && body.state) {
-    return { accepted: true, task: { uuid: body.uuid, name: body.name, state: body.state, message: body.message ?? null, progress: body.taskProgress?.progressInPercent ?? null } };
+    return redactPasswords({ accepted: true, task: { uuid: body.uuid, name: body.name, state: body.state, message: body.message ?? null, progress: body.taskProgress?.progressInPercent ?? null } });
   }
-  return status === 204 || body === null ? { ok: true, status } : { ok: true, status, result: body };
+  return status === 204 || body === null ? { ok: true, status } : { ok: true, status, result: redactPasswords(body) };
 }
 
 export function registerAdmin(server, { z, tool, adminTool, READ, WRITE, DESTRUCTIVE, env = process.env }, getConfig, fetchImpl = fetch) {
-  const scp = createScp(getConfig, fetchImpl);
+  const scp = createScp(getConfig, fetchImpl, env);
   const selfIp = String(env.ORRERY_SELF_IP || "").trim() || null;
   const protect = protectedIps(env);
   const notSelf = (serverId) => assertNotSelf(scp, serverId, selfIp, protect);
@@ -165,14 +207,15 @@ export function registerAdmin(server, { z, tool, adminTool, READ, WRITE, DESTRUC
   let protectedIds = null;
   const protectedServerIds = () =>
     (protectedIds ??= (async () => {
-      if (!selfIp) throw new Error(NO_SELF_IP);
+      const refusal = selfIpRefusal(selfIp);
+      if (refusal) throw new Error(refusal);
       const ids = [];
       for (let offset = 0; offset < 2000; offset += 100) {
         const { body: page } = await scp.request("GET", `/api/v1/servers?limit=100&offset=${offset}`);
         if (!Array.isArray(page)) throw new Error("Unexpected response from GET /api/v1/servers");
         for (const m of page) {
           const s = toServer((await scp.request("GET", `/api/v1/servers/${Number(m.id)}?loadServerLiveInfo=false`)).body);
-          if (s.ipv4.some((ip) => protect.includes(ip))) ids.push(Number(m.id));
+          if (protectedIpOf(s, protect)) ids.push(Number(m.id));
         }
         if (page.length < 100) break;
       }
@@ -183,7 +226,7 @@ export function registerAdmin(server, { z, tool, adminTool, READ, WRITE, DESTRUC
     }));
 
   // A firewall policy attached to an interface of a protected server is not changed from a chat: a
-  // policy that drops the replies cut the middle server's tunnel once (docs/architecture.md).
+  // policy that drops the replies cut the Orrery host's tunnel once (docs/architecture.md).
   async function assertPolicyNotProtected(policyId) {
     for (const id of await protectedServerIds()) {
       const live = (await scp.request("GET", `/api/v1/servers/${id}?loadServerLiveInfo=true`)).body?.serverLiveInfo;
@@ -218,7 +261,8 @@ export function registerAdmin(server, { z, tool, adminTool, READ, WRITE, DESTRUC
     tools.push(name);
   };
   const SERVER_ID = z.number().int().positive().describe("netcup server id (from netcup_servers)");
-  const CONFIRM = z.string().describe("The server's name (v22…), nickname or hostname, repeated to confirm the target");
+  const CONFIRM = z.string().describe("The server's name (v22...), nickname or hostname, repeated to confirm the target");
+  const GUARDED = " Protected servers (the Orrery host and ORRERY_PROTECTED_IPS) are refused, and without ORRERY_SELF_IP everything except a plain start is refused.";
   const UUID = z.string().regex(/^[0-9a-f-]{8,64}$/i);
   const merge = { contentType: "application/merge-patch+json" };
   const sid = (n) => Number(n);
@@ -281,7 +325,7 @@ export function registerAdmin(server, { z, tool, adminTool, READ, WRITE, DESTRUC
   add("netcup_set_power", {
     title: "Start, stop or restart a netcup server",
     description:
-      "ON starts a stopped server. ON with option POWERCYCLE or RESET restarts a running server (hard). OFF shuts down through ACPI; OFF with option POWEROFF cuts power at once. SUSPENDED pauses the server.",
+      "ON starts a stopped server. ON with option POWERCYCLE or RESET restarts a running server (hard). OFF shuts down through ACPI; OFF with option POWEROFF cuts power at once. SUSPENDED pauses the server." + GUARDED,
     inputSchema: { serverId: SERVER_ID, state: z.enum(["ON", "OFF", "SUSPENDED"]), option: z.enum(["POWERCYCLE", "RESET", "POWEROFF"]).optional() },
     annotations: DESTRUCTIVE,
   }, adminTool("netcup_set_power", async ({ serverId, state, option }) => {
@@ -311,7 +355,7 @@ export function registerAdmin(server, { z, tool, adminTool, READ, WRITE, DESTRUC
     summarize(await scp.request("POST", `/api/v1/servers/${sid(serverId)}/snapshots`, { body: { name, ...(description ? { description } : {}), ...(online !== undefined ? { onlineSnapshot: online } : {}) } }))));
   add("netcup_revert_snapshot", {
     title: "Revert to snapshot",
-    description: "Roll a server's disks back to a snapshot. Everything written since then is lost.",
+    description: "Roll a server's disks back to a snapshot. Everything written since then is lost." + GUARDED,
     inputSchema: { serverId: SERVER_ID, name: z.string().min(1).max(255), confirmServerName: CONFIRM },
     annotations: DESTRUCTIVE,
   }, adminTool("netcup_revert_snapshot", async ({ serverId, name, confirmServerName }) => {
@@ -327,7 +371,7 @@ export function registerAdmin(server, { z, tool, adminTool, READ, WRITE, DESTRUC
   }, adminTool("netcup_delete_snapshot", async ({ serverId, name }) => summarize(await scp.request("DELETE", `/api/v1/servers/${sid(serverId)}/snapshots/${encodeURIComponent(name)}`))));
   add("netcup_rescue_system", {
     title: "Rescue system on or off",
-    description: "Boot a server into netcup's rescue system (active=true) or back from it (active=false). The server restarts.",
+    description: "Boot a server into netcup's rescue system (active=true) or back from it (active=false). The server restarts. The rescue password is not returned." + GUARDED,
     inputSchema: { serverId: SERVER_ID, active: z.boolean() },
     annotations: DESTRUCTIVE,
   }, adminTool("netcup_rescue_system", async ({ serverId, active }) => {
@@ -336,7 +380,7 @@ export function registerAdmin(server, { z, tool, adminTool, READ, WRITE, DESTRUC
   }));
   add("netcup_reinstall", {
     title: "Reinstall the operating system",
-    description: "Install an image (id from netcup_list_images) on a server. ALL DATA ON THE TARGET DISK IS ERASED. Login uses the given SSH key ids (from netcup_list_ssh_keys).",
+    description: "Install an image (id from netcup_list_images) on a server. ALL DATA ON THE TARGET DISK IS ERASED. Login uses the given SSH key ids (from netcup_list_ssh_keys)." + GUARDED,
     inputSchema: {
       serverId: SERVER_ID,
       imageFlavourId: z.number().int().positive(),
@@ -372,7 +416,7 @@ export function registerAdmin(server, { z, tool, adminTool, READ, WRITE, DESTRUC
   add("netcup_api_request", {
     title: "Call any SCP API endpoint",
     description:
-      "Call any endpoint from netcup_list_endpoints (firewall policies, failover IPs, ISOs, VLANs, disks, rescue system status, ...). The path must match netcup's current OpenAPI spec; {userId} is filled in automatically. Prefer the dedicated tools when one fits; reinstall, disk format and snapshot revert go only through tools that ask for the server name. Changes to the middle server or another protected server, and to firewall policies attached to them, are refused. Passwords in results are redacted. Can change or delete anything else in the account.",
+      "Call any endpoint from netcup_list_endpoints (firewall policies, failover IPs, ISOs, VLANs, disks, rescue system status, ...). The path must match netcup's current OpenAPI spec; {userId} is filled in automatically. Prefer the dedicated tools when one fits; reinstall, disk format and snapshot revert go only through tools that ask for the server name. Changes to the Orrery host or another protected server, and to firewall policies attached to them, are refused. Passwords in results are redacted. Can change or delete anything else in the account.",
     inputSchema: {
       method: z.enum(METHODS),
       path: z.string().regex(/^\/api\/v1\//, "path starts with /api/v1/").describe("e.g. /api/v1/users/{userId}/firewall-policies or /api/v1/servers/42/rescuesystem (no query string: use query)"),
@@ -408,6 +452,6 @@ export function registerAdmin(server, { z, tool, adminTool, READ, WRITE, DESTRUC
     const ep = matchEndpoint(spec.endpoints, method, p);
     if (!ep) throw new Error(`${method} ${p} is not in netcup's API spec (version ${spec.version}). Use netcup_list_endpoints.`);
     if (query && Object.keys(query).length) p += "?" + new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)]));
-    return redactPasswords(summarize(await scp.request(method, p, { body, contentType: ep.merge ? "application/merge-patch+json" : "application/json" })));
+    return summarize(await scp.request(method, p, { body, contentType: ep.merge ? "application/merge-patch+json" : "application/json" }));
   }
 }

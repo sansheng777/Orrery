@@ -83,28 +83,31 @@ export function createApi(config, fetchImpl = fetch, { retryWaitMs = 1000, now =
     if (!svc) throw new Error(`Unsupported Alibaba Cloud service ${service}`);
     if (!ACTION.test(String(action))) throw new Error(`Invalid action ${action}`);
     if (region && !REGION.test(region)) throw new Error(`Invalid region ${region}`);
-    const all = {
-      ...flatten(params),
-      ...(region && svc.regional && params.RegionId === undefined ? { RegionId: region } : {}),
-      Action: action,
-      Format: "JSON",
-      Version: svc.version,
-      AccessKeyId: config.accessKeyId,
-      SignatureMethod: "HMAC-SHA1",
-      SignatureVersion: "1.0",
-      SignatureNonce: nonce(),
-      Timestamp: now().toISOString().replace(/\.\d{3}Z$/, "Z"),
-    };
-    all.Signature = sign("POST", all, config.accessKeySecret);
-    const body = Object.keys(all).map((k) => `${percentEncode(k)}=${percentEncode(all[k])}`).join("&");
-    // Reads are retried once on a 5xx or throttling; a change is never sent twice.
-    for (let attempt = 0; ; attempt++) {
-      const res = await fetchImpl(`https://${svc.host(region)}/`, {
+    // Each attempt is signed afresh: a resent request with the same SignatureNonce is refused as a replay.
+    const send = () => {
+      const all = {
+        ...flatten(params),
+        ...(region && svc.regional && params.RegionId === undefined ? { RegionId: region } : {}),
+        Action: action,
+        Format: "JSON",
+        Version: svc.version,
+        AccessKeyId: config.accessKeyId,
+        SignatureMethod: "HMAC-SHA1",
+        SignatureVersion: "1.0",
+        SignatureNonce: nonce(),
+        Timestamp: now().toISOString().replace(/\.\d{3}Z$/, "Z"),
+      };
+      all.Signature = sign("POST", all, config.accessKeySecret);
+      return fetchImpl(`https://${svc.host(region)}/`, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-        body,
+        body: Object.keys(all).map((k) => `${percentEncode(k)}=${percentEncode(all[k])}`).join("&"),
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
+    };
+    // Reads are retried once on a 5xx or throttling; a change is never sent twice.
+    for (let attempt = 0; ; attempt++) {
+      const res = await send();
       const text = await res.text();
       let json = null;
       try {
@@ -233,17 +236,31 @@ export function instanceIdsIn(params = {}) {
   return [...new Set(ids.filter(Boolean))];
 }
 
-// What the generic tools refuse: deleting instances goes through aliyun_delete (asks for the name); a
-// domain is never transferred out or unlocked for transfer, and its transfer code never read; answers that
-// carry a private key or a console login token; billing is read-only.
+// What the generic tools refuse: deleting instances goes through aliyun_delete (asks for the name), and
+// the other ECS actions that erase an instance or its disks without that confirmation (scheduled release,
+// system disk replacement, disk resets) are left to the console; a domain is never transferred out or
+// unlocked for transfer, and its transfer code never read; answers that carry a private key, a console
+// login token or a shell session credential; billing is read-only.
 export function guardRequest(service, action) {
   if (!SERVICES[service]) throw new Error(`Unsupported Alibaba Cloud service ${service} (supported: ${Object.keys(SERVICES).join(", ")})`);
   if (SERVICES[service].readOnly && !READ_ACTION.test(action)) throw new Error(`${service} is read-only here: ${action} is refused (only Query*, Describe*, Get*, List*).`);
-  if (service === "ecs" && /^DeleteInstances?$/.test(action)) throw new Error("Deleting instances goes through aliyun_delete, which asks for the name.");
-  if (service === "ecs" && /^(CreateKeyPair|DescribeInstanceVncUrl)$/.test(action)) throw new Error(`${action} returns a private key or a console login token, which must not end up in the chat; do it in the Aliyun console.`);
+  if (service === "ecs" && /^DeleteInstances?$/i.test(action)) throw new Error("Deleting instances goes through aliyun_delete, which asks for the name.");
+  if (service === "ecs" && /^(ModifyInstanceAutoReleaseTime|ReplaceSystemDisk|ResetDisks?)$/i.test(action)) throw new Error(`${action} releases an instance or erases a disk without the name confirmation of aliyun_delete; do it in the Aliyun console.`);
+  if (service === "ecs" && /^(CreateKeyPair|DescribeInstanceVncUrl|StartTerminalSession)$/i.test(action)) throw new Error(`${action} returns a private key, a console login token or a shell session credential, which must not end up in the chat; do it in the Aliyun console.`);
   if (service === "domain" && /TransferOut|TransferProhibition|AuthorizationCode/i.test(action)) throw new Error(`${action} would let the domain leave this account or reveals its transfer code; do it in the Aliyun console.`);
-  if (service === "cas" && /^(GetUserCertificateDetail|DescribeCertificatePrivateKey|DescribeDownloadCertificate)/.test(action)) throw new Error(`${action} returns a certificate's private key, which must not end up in the chat; download it in the Aliyun console.`);
+  if (service === "cas" && /^(GetUserCertificateDetail|DescribeCertificatePrivateKey|DescribeDownloadCertificate)/i.test(action)) throw new Error(`${action} returns a certificate's private key, which must not end up in the chat; download it in the Aliyun console.`);
 }
+
+// Secrets inside otherwise ordinary answers: CDN URL-signing keys (the auth_key1 / auth_key2 arguments of
+// the aliyun_auth function in DescribeCdnDomainConfigs, or a field of that name) and any private key.
+const AUTH_KEY = /^auth_key/i;
+export const redactSecrets = (v) => {
+  if (Array.isArray(v)) return v.map(redactSecrets);
+  if (typeof v === "string") return /PRIVATE KEY-----/.test(v) ? "[redacted]" : v;
+  if (!v || Object.getPrototypeOf(v) !== Object.prototype) return v;
+  const signingArg = AUTH_KEY.test(String(v.ArgName ?? ""));
+  return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, (AUTH_KEY.test(k) || (signingArg && k === "ArgValue")) && x != null && x !== "" ? "[redacted]" : redactSecrets(x)]));
+};
 
 // ORRERY_SELF_IP plus ORRERY_PROTECTED_IPS: instances a chat may start but never stop, reboot,
 // delete or change.
@@ -255,7 +272,11 @@ export async function getInstances(api, region, ids) {
   return (r.Instances?.Instance || []).map((i) => toInstance(i, region));
 }
 
-export function assertNotProtected(list, protect) {
+// Fails closed: every id must be found in that region (an id from another region, or a typo, is refused,
+// since nothing then shows it is not a protected instance).
+export function assertNotProtected(list, protect, ids = list.map((i) => i.id), region = list[0]?.region) {
+  const missing = ids.filter((id) => !list.some((i) => i.id === id));
+  if (missing.length) throw new Error(`Refusing: no instance ${missing.join(", ")} in ${region || "(no region given)"}, so it cannot be checked against the protected IPs. Give the region the instance is in (from aliyun_instances).`);
   for (const i of list) {
     if (i.publicIp && protect.includes(String(i.publicIp).toLowerCase())) {
       throw new Error(`Refusing: instance ${i.name} (${i.id}, ${i.region}) has the protected IP ${i.publicIp} (ORRERY_SELF_IP or ORRERY_PROTECTED_IPS) and must keep running. Do this in the Aliyun console if you really mean it.`);
@@ -279,7 +300,8 @@ export async function runShell(api, { region, instanceId, script, timeoutSec = 6
     const d = await api.request("ecs", region, "DescribeInvocationResults", { InvokeId: r.InvokeId, InstanceId: instanceId, ContentEncoding: "PlainText" });
     const res = d.Invocation?.InvocationResults?.InvocationResult?.[0];
     const status = res?.InvocationStatus || res?.InvokeRecordStatus;
-    if (res && /^(Success|Failed|Timeout|Error|Aborted|Cancelled|Terminated|Finished)$/.test(status || "")) {
+    // Every final state of an invocation (InvocationStatus) or of its record (InvokeRecordStatus).
+    if (res && /^(Success|Failed|PartialFailed|Timeout|Error|Aborted|Cancelled|Terminated|Finished|Invalid|Stopped)$/.test(status || "")) {
       return { status, exitCode: res.ExitCode ?? null, output: res.Output || "", error: res.ErrorInfo || res.ErrorCode || null };
     }
     if (Date.now() > deadline) throw new Error(`Cloud Assistant command ${r.InvokeId} still ${status || "pending"} after ${Math.round(maxWaitMs / 1000)}s`);
@@ -305,7 +327,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   const serviceList = Object.entries(SERVICES).map(([k, v]) => `${k} (${v.what})`).join("; ");
   add("aliyun_query", {
     title: "Any read-only Alibaba Cloud API call",
-    description: `Call a read action (Describe*, Query*, Get*, List*) of a supported service and return the answer. Services: ${serviceList}. region is the region id for ecs and vpc, null for the others. Examples: alidns DescribeDomains / DescribeDomainRecords (DomainName); domain QueryDomainList (PageNum, PageSize) / QueryDomainByDomainName; cdn DescribeUserDomains / DescribeDomainBpsData / DescribeCdnDomainDetail; cas ListUserCertificateOrder; bss QueryInstanceBill / QueryAccountBill; vpc DescribeEipAddresses. Answers with private keys, console tokens or a domain's transfer code are refused.`,
+    description: `Call a read action (Describe*, Query*, Get*, List*) of a supported service and return the answer. Services: ${serviceList}. region is the region id for ecs and vpc, null for the others. Examples: alidns DescribeDomains / DescribeDomainRecords (DomainName); domain QueryDomainList (PageNum, PageSize) / QueryDomainByDomainName; cdn DescribeUserDomains / DescribeDomainBpsData / DescribeCdnDomainDetail; cas ListUserCertificateOrder; bss QueryInstanceBill / QueryAccountBill; vpc DescribeEipAddresses. Answers with private keys, console tokens, shell session credentials or a domain's transfer code are refused; CDN URL-signing keys (auth_key*) and private keys in answers are redacted.`,
     inputSchema: {
       service: z.enum(Object.keys(SERVICES)),
       region: z.string().nullable().optional(),
@@ -316,7 +338,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   }, tool(async ({ service, region, action, params = {} }) => {
     if (!READ_ACTION.test(action)) throw new Error(`${action} is not a read action; changes go through aliyun_call.`);
     guardRequest(service, action);
-    return api.request(service, SERVICES[service].regional ? region || null : null, action, params);
+    return redactSecrets(await api.request(service, SERVICES[service].regional ? region || null : null, action, params));
   }));
   add("aliyun_billing", {
     title: "Alibaba Cloud balance and monthly bill",
@@ -328,7 +350,24 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
 
   const protect = protectedIps(env);
   const notProtected = async (region, ids) => {
-    if (protect.length && ids.length) assertNotProtected(await getInstances(api, region, ids), protect);
+    if (!protect.length || !ids.length) return;
+    if (!region || !REGION.test(String(region))) throw new Error(`Refusing: ${ids.join(", ")} cannot be checked against the protected IPs without a valid region (RegionId).`);
+    assertNotProtected(await getInstances(api, region, ids), protect, ids, region);
+  };
+  // An elastic IP a vpc change names by AllocationId (UnassociateEipAddress needs no InstanceId): refused
+  // when the address itself is protected, else the ECS instance it is bound to is checked too.
+  const eipInstances = async (region, params) => {
+    const allocs = Object.entries(flatten(params)).filter(([k]) => /^AllocationId(\.\d+)?$/.test(k)).map(([, v]) => v);
+    if (!protect.length || !allocs.length) return [];
+    if (!region || !REGION.test(String(region))) throw new Error(`Refusing: ${allocs.join(", ")} cannot be checked against the protected IPs without a valid region (RegionId).`);
+    const out = [];
+    for (const a of allocs) {
+      const e = (await api.request("vpc", region, "DescribeEipAddresses", { AllocationId: a, PageSize: 100 })).EipAddresses?.EipAddress?.find((x) => x.AllocationId === a);
+      if (!e) throw new Error(`Refusing: no elastic IP ${a} in ${region}, so it cannot be checked against the protected IPs.`);
+      if (protect.includes(String(e.IpAddress || "").toLowerCase())) throw new Error(`Refusing: elastic IP ${a} is the protected IP ${e.IpAddress} (ORRERY_SELF_IP or ORRERY_PROTECTED_IPS). Do this in the Aliyun console if you really mean it.`);
+      if (/^i-[a-z0-9]+$/i.test(e.InstanceId || "")) out.push(e.InstanceId);
+    }
+    return out;
   };
   const where = { region: z.string().describe("Region id, e.g. cn-beijing (from aliyun_instances)"), instanceId: z.string().regex(/^i-[a-z0-9]+$/, "ECS instance id, e.g. i-2zeexample0001abcd") };
   add("aliyun_power", {
@@ -359,7 +398,7 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
   }));
   add("aliyun_call", {
     title: "Call any Alibaba Cloud API action (ECS, VPC, DNS, domains, CDN, certificates)",
-    description: `Call any action of a supported service, changes included. Services: ${serviceList}. region is the region id for ecs and vpc, null for the others. Examples: ecs RunInstances, ModifyInstanceSpec, AuthorizeSecurityGroup, CreateSnapshot, RunCommand; alidns AddDomainRecord (DomainName, RR, Type, Value), UpdateDomainRecord (RecordId, ...), DeleteDomainRecord; domain SaveSingleTaskForCreatingOrderRenew (renew, charges the account); cdn AddCdnDomain (DomainName, CdnType web, Sources JSON), SetCdnDomainSSLCertificate, RefreshObjectCaches (ObjectPath), BatchSetCdnDomainConfig; cas UploadUserCertificate. Use aliyun_query for reads. params are the action's parameters; lists may be given as arrays ({"InstanceId": ["i-1"]}). Refused: deleting ECS instances (aliyun_delete), billing changes (bss is read-only), domain transfer-out, unlocking or transfer codes, private keys and console tokens, and changes to an instance with a protected IP.`,
+    description: `Call any action of a supported service, changes included. Services: ${serviceList}. region is the region id for ecs and vpc, null for the others. Examples: ecs RunInstances, ModifyInstanceSpec, AuthorizeSecurityGroup, CreateSnapshot, RunCommand; alidns AddDomainRecord (DomainName, RR, Type, Value), UpdateDomainRecord (RecordId, ...), DeleteDomainRecord; domain SaveSingleTaskForCreatingOrderRenew (renew, charges the account); cdn AddCdnDomain (DomainName, CdnType web, Sources JSON), SetCdnDomainSSLCertificate, RefreshObjectCaches (ObjectPath), BatchSetCdnDomainConfig; cas UploadUserCertificate. Use aliyun_query for reads. params are the action's parameters; lists may be given as arrays ({"InstanceId": ["i-1"]}). Refused: deleting ECS instances (aliyun_delete); scheduled release (ModifyInstanceAutoReleaseTime), ReplaceSystemDisk and ResetDisk(s), which erase without that confirmation (use the console); billing changes (bss is read-only); domain transfer-out, unlocking or transfer codes; private keys, console tokens and terminal sessions; and changes to an instance with a protected IP or to its elastic IP (the instance must be found in the region the call goes to). CDN URL-signing keys and private keys in answers are redacted.`,
     inputSchema: {
       service: z.enum(Object.keys(SERVICES)),
       region: z.string().nullable().optional(),
@@ -369,8 +408,17 @@ export function register(server, { z, tool, adminTool, READ, DESTRUCTIVE, admin,
     annotations: DESTRUCTIVE,
   }, adminTool("aliyun_call", async ({ service, region, action, params = {} }) => {
     guardRequest(service, action);
-    if (service === "ecs" && !READ_ACTION.test(action) && !/^StartInstances?$/.test(action)) await notProtected(region || params.RegionId, instanceIdsIn(params));
-    return api.request(service, SERVICES[service].regional ? region || null : null, action, params);
+    const regional = SERVICES[service].regional;
+    if (!READ_ACTION.test(action) && !(service === "ecs" && /^StartInstances?$/i.test(action))) {
+      // The region the request goes to (request() sends params.RegionId when given). Outside ECS an
+      // InstanceId can name other things (an SLB or NAT gateway for an EIP, a domain or certificate
+      // instance), so only ids shaped like ECS instance ids are checked there.
+      const inRegion = params.RegionId ?? (regional ? region : null);
+      const ids = instanceIdsIn(params).filter((x) => service === "ecs" || /^i-[a-z0-9]+$/i.test(x));
+      if (service === "vpc") ids.push(...(await eipInstances(inRegion, params)));
+      await notProtected(inRegion, [...new Set(ids)]);
+    }
+    return redactSecrets(await api.request(service, regional ? region || null : null, action, params));
   }));
   return { id, name, configured: true, tools };
 }

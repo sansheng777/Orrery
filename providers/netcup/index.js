@@ -18,7 +18,8 @@ const TIMEOUT_MS = 15000;
 const PAGE = 100;
 
 // The refresh token comes from NETCUP_REFRESH_TOKEN or $ORRERY_DIR/netcup.json ({"refreshToken": "..."}).
-// netcup's Keycloak may rotate it on use; a rotated token is written back to that file.
+// netcup's Keycloak may rotate it on use; a rotated token is written back to that file. A token from the
+// environment cannot be written back, so the file form is the one to use.
 export function loadConfig(env = process.env, dataDir) {
   if (env.NETCUP_REFRESH_TOKEN) return { configured: true, refreshToken: env.NETCUP_REFRESH_TOKEN, file: null };
   const file = dataDir && path.join(dataDir, "netcup.json");
@@ -72,6 +73,12 @@ export async function accessToken(config, fetchImpl, force = false) {
         } catch (e) {
           console.error(`netcup: could not save the rotated refresh token to ${config.file}: ${e.message}`);
         }
+      } else if (!s.warnedUnsaved) {
+        s.warnedUnsaved = true;
+        console.warn(
+          "netcup: warning: netcup rotated the refresh token, but NETCUP_REFRESH_TOKEN comes from the environment, so the new token is not saved anywhere. " +
+            "This process keeps working; after a restart the old token may be rejected. Use the file form instead: unset NETCUP_REFRESH_TOKEN and run providers/netcup/login.js (writes $ORRERY_DIR/netcup.json).",
+        );
       }
     }
     s.accessToken = body.access_token;

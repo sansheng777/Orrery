@@ -146,10 +146,8 @@ export function stream(server, command, { onData, onEnd }) {
       if (stopped) return end();
       try {
         client.exec(command, (err, ch) => {
-          if (err) {
-            drop(key, entry);
-            return end(err);
-          }
+          // A refused channel (e.g. sshd's MaxSessions) fails this call only; the shared connection stays.
+          if (err) return end(err);
           channel = ch;
           ch.on("data", (d) => {
             touch(key);
@@ -179,12 +177,9 @@ export async function exec(server, command, { timeoutSec = 30 } = {}) {
   const client = await entry.promise;
   const started = Date.now();
   return new Promise((resolve, reject) => {
-    const failed = (err) => {
-      drop(key, entry);
-      reject(err);
-    };
     const onChannel = (err, stream) => {
-      if (err) return failed(err);
+      // A refused channel (e.g. sshd's MaxSessions) fails this call only; the shared connection stays.
+      if (err) return reject(err);
       const stdout = collector();
       const stderr = collector();
       let timedOut = false;
@@ -192,18 +187,25 @@ export async function exec(server, command, { timeoutSec = 30 } = {}) {
         timedOut = true;
         stream.close();
       }, timeoutSec * 1000);
-      stream.on("data", (d) => stdout.add(d));
+      stream.on("data", (d) => {
+        touch(key); // output keeps the connection from being dropped as idle
+        stdout.add(d);
+      });
       stream.stderr.on("data", (d) => stderr.add(d));
       stream.on("close", (code, signal) => {
         clearTimeout(timer);
-        const truncated = timedOut || stdout.truncated || stderr.truncated;
-        resolve({ stdout: stdout.text(), stderr: stderr.text(), code: code ?? null, signal: signal ?? null, truncated, ms: Date.now() - started });
+        if (code == null && !signal && !timedOut) {
+          return reject(new Error(`The SSH connection to ${server.host} closed before the command finished`));
+        }
+        const truncated = stdout.truncated || stderr.truncated;
+        resolve({ stdout: stdout.text(), stderr: stderr.text(), code: code ?? null, signal: signal ?? null, truncated, timedOut, ms: Date.now() - started });
       });
     };
     try {
       client.exec(command, onChannel);
     } catch (err) {
-      failed(err); // "Not connected": the pooled connection went away in between
+      drop(key, entry); // "Not connected": the pooled connection went away in between
+      reject(err);
     }
   });
 }
@@ -479,7 +481,10 @@ export const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 // so the dashboard's console can keep `cd` between commands.
 export async function runInDir(server, command, cwd, timeoutSec) {
   const marker = "__ORRERY_CWD__";
-  const script = `cd ${cwd ? quote(cwd) : "~"} 2>/dev/null || cd ~
+  // A cwd that does not exist fails the call instead of running the command somewhere else.
+  const dir = !cwd ? "~" : cwd === "~" ? '"$HOME"' : cwd.startsWith("~/") ? `"$HOME"/${quote(cwd.slice(2))}` : quote(cwd);
+  const shown = String(cwd || "~").replace(/[^\w./~ -]/g, "?");
+  const script = `cd -- ${dir} || { echo "orrery: cannot cd to ${shown}" >&2; exit 1; }
 ${command}
 __rc=$?
 printf '\\n${marker}%s\\n' "$(pwd)"
@@ -493,7 +498,7 @@ exit $__rc`;
     newCwd = res.stdout.slice(idx + marker.length + 1).trim() || newCwd;
     output = res.stdout.slice(0, idx);
   }
-  return { output, stderr: res.stderr, exitCode: res.code, cwd: newCwd, truncated: res.truncated, ms: res.ms };
+  return { output, stderr: res.stderr, exitCode: res.code, cwd: newCwd, truncated: res.truncated, timedOut: res.timedOut, ms: res.ms };
 }
 
 export function closeAll() {

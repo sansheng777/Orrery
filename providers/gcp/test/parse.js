@@ -92,6 +92,7 @@ function fakeGoogle({ failProject } = {}) {
     }
     if ((m = p.match(/^\/projects\/([^/]+)$/)) && method === "GET") return json(200, { name: m[1], commonInstanceMetadata: { items: m[1] === "other-proj" ? [{ key: "enable-oslogin", value: "TRUE" }] : [] } });
     if ((m = p.match(/^\/projects\/([^/]+)\/zones\/([^/]+)\/operations\/([^/]+)$/))) return json(200, { name: m[3], status: "DONE" });
+    if (/^\/projects\/[^/]+\/zones\/[^/]+\/instances\/bulkInsert$/.test(p) && method === "POST") return json(200, { name: "op-bulk", status: "RUNNING" });
     if ((m = p.match(/^\/projects\/([^/]+)\/zones\/([^/]+)\/instances\/([^/]+)(\/[^/]+)?$/))) {
       const key = `${m[1]}/${m[2]}/${m[3]}`;
       if (!state[key]) return json(404, { error: { code: 404, message: `The resource 'projects/${key}' was not found` } });
@@ -157,6 +158,22 @@ assert.throws(() => guardRequest("DELETE", "/projects/demo-proj/zones/asia-east1
 assert.throws(() => guardRequest("DELETE", "/projects/demo-proj/zones/asia-east1-b/disks/web-1"), /disk erases its data/);
 assert.throws(() => guardRequest("DELETE", "/projects/demo-proj/regions/asia-east1/disks/d"), /disk erases its data/);
 assert.doesNotThrow(() => guardRequest("DELETE", "/projects/demo-proj/global/snapshots/s1"));
+for (const [method, p] of [
+  ["POST", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers/web-mig/deleteInstances"],
+  ["POST", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers/web-mig/recreateInstances"],
+  ["POST", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers/web-mig/abandonInstances"],
+  ["POST", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers/web-mig/resize?size=0"],
+  ["DELETE", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers/web-mig"],
+  ["POST", "/projects/demo-proj/regions/asia-east1/instanceGroupManagers/web-mig/deleteInstances"],
+  ["POST", "/projects/demo-proj/regions/asia-east1/instanceGroupManagers/web-mig/recreateInstances"],
+  ["POST", "/projects/demo-proj/regions/asia-east1/instanceGroupManagers/web-mig/abandonInstances"],
+  ["POST", "/projects/demo-proj/regions/asia-east1/instanceGroupManagers/web-mig/resize?size=1"],
+  ["DELETE", "/projects/demo-proj/regions/asia-east1/instanceGroupManagers/web-mig/"],
+]) {
+  assert.throws(() => guardRequest(method, p), /managed instance group.*protected instance could be among them/, `${method} ${p}`);
+}
+assert.doesNotThrow(() => guardRequest("GET", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers/web-mig"));
+assert.doesNotThrow(() => guardRequest("POST", "/projects/demo-proj/zones/asia-east1-b/instanceGroupManagers/web-mig/listManagedInstances"));
 for (const p of ["/projects/demo-proj/zones/./instances/web-1", "//projects/demo-proj", "/projects/demo-proj/zones/a%2Fb", "/projects/{p}/zones", "/compute/v1/projects/x", "/v1/projects"]) {
   assert.throws(() => guardRequest("DELETE", p), /Invalid Compute Engine API path|start with \/projects/, p);
 }
@@ -187,6 +204,9 @@ assert.equal(normalizePath("/projects/demo-proj/zones/"), "/projects/demo-proj/z
   const q = t.calls.length;
   await t.gcp_query({ path: "/projects/demo-proj/zones/asia-east1-b/instances/web-1", method: "DELETE" });
   assert.deepEqual(t.calls.slice(q).map((c) => c.method), ["GET"], "gcp_query only reads, even on a protected instance");
+  const b = t.calls.length;
+  await t.gcp_api_request({ method: "POST", path: "/projects/demo-proj/zones/asia-east1-b/instances/bulkInsert", body: { count: 2, namePattern: "test-##" } });
+  assert.deepEqual(t.calls.slice(b).map((c) => `${c.method} ${c.path}`), ["POST /projects/demo-proj/zones/asia-east1-b/instances/bulkInsert"], "bulkInsert is a collection verb, not an instance to look up");
   await assert.rejects(t.gcp_query({ path: "/projects/demo-proj/zones/./instances/web-1" }), /Invalid Compute Engine API path/);
 
   const o = register({});

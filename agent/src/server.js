@@ -9,11 +9,12 @@ import { audited } from "./audit.js";
 import { createDiscovery } from "./discovery.js";
 import { createBootstrapper } from "./bootstrap.js";
 import { KEY_PATH, publicKey } from "./keys.js";
+import { instructionsFor } from "./instructions.js";
 import * as aws from "../../providers/aws/index.js";
 import * as netcup from "../../providers/netcup/index.js";
 import * as gcp from "../../providers/gcp/index.js";
 import * as aliyun from "../../providers/aliyun/index.js";
-import { createScp, serverStateRequest } from "../../providers/netcup/admin.js";
+import { createScp, serverStateRequest, protectedIps as netcupProtectedIps } from "../../providers/netcup/admin.js";
 
 // structuredContent must be a JSON object, so lists (SSH keys, snapshots, tasks) are wrapped as {items}.
 const ok = (data) => {
@@ -66,11 +67,7 @@ function sharedState() {
     authFailures.delete(id);
     remember(id, patch);
   };
-  const awsConfig = aws.loadConfig(process.env, DATA_DIR);
-  const gcpConfig = gcp.loadConfig(process.env, DATA_DIR);
-  const gcpApi = gcpConfig.configured ? gcp.createApi(gcpConfig) : null;
-  const aliyunConfig = aliyun.loadConfig(process.env, DATA_DIR);
-  const aliyunApi = aliyunConfig.configured ? aliyun.createApi(aliyunConfig) : null;
+  // Credentials are read when an onboarding needs them, so added or rotated keys work without a restart.
   const netcupConfig = () => {
     const c = netcup.loadConfig(process.env, DATA_DIR);
     if (!c.configured) throw new Error(c.error || "netcup credentials are missing");
@@ -82,11 +79,22 @@ function sharedState() {
     keyPath: KEY_PATH,
     discovery,
     selfIp: discovery.selfIp,
+    protectedIps: netcupProtectedIps(process.env),
     allowRescue: process.env.ORRERY_NETCUP_RESCUE === "1",
-    aws: { config: awsConfig, sendSshPublicKey: aws.sendSshPublicKey, lightsailAccess: aws.lightsailAccess },
-    netcup: netcup.loadConfig(process.env, DATA_DIR).configured ? { scp: createScp(netcupConfig), toServer: netcup.toServer, serverStateRequest } : null,
-    gcp: gcpConfig.configured ? { addSshKey: (t) => gcp.addSshKey(gcpApi, t) } : null,
-    aliyun: aliyunConfig.configured ? { runShell: (t) => aliyun.runShell(aliyunApi, t) } : null,
+    get aws() {
+      return { config: aws.loadConfig(process.env, DATA_DIR), sendSshPublicKey: aws.sendSshPublicKey, lightsailAccess: aws.lightsailAccess };
+    },
+    get netcup() {
+      return netcup.loadConfig(process.env, DATA_DIR).configured ? { scp: createScp(netcupConfig), toServer: netcup.toServer, serverStateRequest } : null;
+    },
+    get gcp() {
+      const c = gcp.loadConfig(process.env, DATA_DIR);
+      return c.configured ? { addSshKey: (t) => gcp.addSshKey(gcp.createApi(c), t) } : null;
+    },
+    get aliyun() {
+      const c = aliyun.loadConfig(process.env, DATA_DIR);
+      return c.configured ? { runShell: (t) => aliyun.runShell(aliyun.createApi(c), t) } : null;
+    },
     log: (m) => console.error(m),
   });
   return (shared = { discovery, bootstrapper, authFailures });
@@ -109,16 +117,16 @@ function registerCloudProviders(server, providers, role) {
 }
 
 function createAdminServer() {
-  const server = new McpServer({ name: "orrery", version: "0.5.0" });
+  const server = new McpServer({ name: "orrery", version: "0.5.0" }, { instructions: instructionsFor("admin") });
   const adminTool = (name, fn) => tool(audited(name, fn));
   registerCloudProviders(server, registerProviders(server, { z, tool, adminTool, READ, WRITE, DESTRUCTIVE, admin: true }), "admin");
-  registerSshTools(server, { allowExec: true, change: adminTool });
+  registerSshTools(server, { allowExec: true, change: adminTool, onboarding: true });
   registerOnboarding(server, adminTool);
   return server;
 }
 
 function createHubServer() {
-  const server = new McpServer({ name: "orrery-local", version: "0.5.0" });
+  const server = new McpServer({ name: "orrery-local", version: "0.5.0" }, { instructions: instructionsFor("hub") });
   registerSshTools(server, { allowExec: ALLOW_EXEC, change: (name, fn) => tool(fn) });
   // Cloud provider views. This connector only gets their read tools, whatever ORRERY_ALLOW_EXEC
   // says; starting, stopping or deleting machines is only on the admin connector.
@@ -128,7 +136,7 @@ function createHubServer() {
 
 // Monitoring and shell access over SSH. `change(name, fn)` wraps tools that change something
 // (audited on the admin connector).
-function registerSshTools(server, { allowExec, change }) {
+function registerSshTools(server, { allowExec, change, onboarding = false }) {
   const { discovery, authFailures } = sharedState();
   const resolve = (id) => discovery.resolve(id);
   // server_stats and the live sampler share the login backoff, so live figures cannot hammer a host that refuses us.
@@ -153,7 +161,7 @@ function registerSshTools(server, { allowExec, change }) {
     {
       title: "List servers",
       description:
-        "Every server Orrery can monitor: saved ones, hosts from ~/.ssh/config, and every netcup server, AWS EC2/Lightsail instance, Linode, Google Cloud, Alibaba Cloud and Vultr instance, DigitalOcean Droplet and Kamatera server discovered automatically (source netcup/aws/linode/gcp/aliyun/vultr/digitalocean/kamatera). Discovered servers need ssh_bootstrap once before server_stats works. Passwords are never returned.",
+        "Every server Orrery can monitor: saved ones, hosts from ~/.ssh/config, and every netcup server, AWS EC2/Lightsail instance, Linode, Google Cloud, Alibaba Cloud and Vultr instance, DigitalOcean Droplet and Kamatera server discovered automatically (source netcup/aws/linode/gcp/aliyun/vultr/digitalocean/kamatera). " + (onboarding ? "Discovered servers need ssh_bootstrap once before server_stats works." : "A discovered server must trust this agent's SSH key (keys/id_ed25519.pub in the data directory, ~/.orrery by default) before server_stats works.") + " Passwords are never returned.",
       annotations: { readOnlyHint: true },
     },
     tool(async () => {
@@ -204,7 +212,7 @@ function registerSshTools(server, { allowExec, change }) {
     {
       title: "Add server",
       description:
-        "Save a server that is not discovered automatically, or override a discovered one (same IP) with another user, key or port. Auth order: password if given, then keyPath, then the agent's own key and ~/.ssh keys.",
+        "Save a server that is not discovered automatically, or override a discovered one (same IP) with another user, key or port. Login: the password if given, then the key at keyPath (or, without keyPath, Orrery's own key and the default ~/.ssh keys), then ssh-agent if one is running.",
       inputSchema: {
         name: z.string().min(1).max(64),
         host: z.string().min(1),
@@ -218,7 +226,6 @@ function registerSshTools(server, { allowExec, change }) {
     },
     change("add_server", async (a) => {
       const saved = addServer(a);
-      discovery.invalidate();
       authFailures.clear();
       return saved;
     }),
@@ -232,9 +239,9 @@ function registerSshTools(server, { allowExec, change }) {
       inputSchema: {
         id: z.string(),
         name: z.string().min(1).max(64).optional(),
-        host: z.string().optional(),
+        host: z.string().min(1).optional(),
         port: z.number().int().min(1).max(65535).optional(),
-        username: z.string().optional(),
+        username: z.string().min(1).optional(),
         keyPath: z.string().optional(),
         password: z.string().optional(),
         tags: z.array(z.string()).optional(),
@@ -262,7 +269,6 @@ function registerSshTools(server, { allowExec, change }) {
       const r = removeServer(id);
       dropConnections(id);
       live.forget(id);
-      discovery.invalidate();
       return r;
     }),
   );
