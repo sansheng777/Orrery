@@ -8,7 +8,7 @@
     "providers/*"
   ],
   "scripts": {
-    "test": "npm test -w agent"
+    "test": "npm test -w agent && node deploy/test.mjs"
   },
   "license": "MIT"
 }

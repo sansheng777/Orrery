@@ -8,8 +8,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "== Recording this machine's public IPv4"
-# A value already in .env wins: on clouds with 1:1 NAT (AWS, Google Cloud, Alibaba Cloud and others)
-# the public address is not on any network interface, so set it there by hand.
+# A value already in .env wins. Otherwise it is the public address on a network interface, or, on
+# clouds with 1:1 NAT (AWS, Google Cloud, Alibaba Cloud and others) where no interface has it, the
+# address Cloudflare sees this machine calling from.
 # An inline comment (from the first '#') is dropped before trimming spaces and quotes.
 SELF_IP=$( (grep -s '^ORRERY_SELF_IP=' .env || true) | tail -1 | cut -d= -f2- | cut -d'#' -f1 | tr -d "[:space:]\"'")
 if [ -z "$SELF_IP" ]; then
@@ -17,7 +18,10 @@ if [ -z "$SELF_IP" ]; then
   SELF_IP=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | grep -vE '^(10|127|192\.168|172\.(1[6-9]|2[0-9]|3[01])|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7]))\.' | head -1 || true)
 fi
 if [ -z "$SELF_IP" ]; then
-  echo "No public IPv4 on this machine's interfaces (normal behind 1:1 NAT). Add ORRERY_SELF_IP=<this machine's public IP> to .env and run again." >&2
+  SELF_IP=$(curl -4 -fsS --max-time 10 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | sed -n 's/^ip=//p' || true)
+fi
+if [ -z "$SELF_IP" ]; then
+  echo "Could not find this machine's public IPv4. Add ORRERY_SELF_IP=<this machine's public IP> to .env and run again." >&2
   exit 1
 fi
 if ! [[ "$SELF_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
