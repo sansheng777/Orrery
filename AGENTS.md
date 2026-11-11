@@ -11,6 +11,7 @@ This file is for AI agents. Part 1 is for helping a user deploy and use Orrery; 
 Orrery needs one dedicated, always-on VPS, the Orrery host. It runs there, every client connects to it, and all credentials stay on it. Before any deploy step, ask the user which machine that is.
 
 - It runs nothing else, and it is not a machine an assistant may stop or rebuild. Debian or Ubuntu, a public IPv4, root SSH access; 1 vCPU and 1 GB of memory are typically enough.
+- Reaching it: an agent on the user's computer can use their SSH access to the host. An agent in a cloud session or a chat usually cannot reach it, so it hands the user the commands to run there. Your own shell is not the Orrery host: never run the deploy commands in it.
 - No such machine: the user creates one first, at any provider. Or they use the local mode in the client table below, which needs no server but runs on their own computer and offers only the SSH tools and read-only cloud listings.
 
 ### Deploy (run on the Orrery host as root)
