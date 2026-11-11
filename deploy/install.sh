@@ -11,8 +11,9 @@
 # The token (dash.cloudflare.com > My Profile > API Tokens > Create Custom Token) needs:
 #   Account > Cloudflare Tunnel > Edit, and for the domain: Zone > Zone > Read, DNS > Edit, Zone WAF > Edit.
 #
-# Environment: CLOUDFLARE_API_TOKEN (instead of the prompt), ORRERY_ALLOW_IPS="203.0.113.30 ..." (more
-# addresses that may reach the hostname, for clients on your own computer), ORRERY_HOME (default ~/orrery).
+# Environment, set after the pipe (curl ... | NAME=value bash -s -- host): CLOUDFLARE_API_TOKEN (instead of
+# the prompt), ORRERY_ALLOW_IPS="203.0.113.30 ..." (more addresses that may reach the hostname, for
+# clients on your own computer; applies when the rule is created), ORRERY_HOME (default ~/orrery).
 set -euo pipefail
 
 REPO=https://github.com/sansheng777/Orrery

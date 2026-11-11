@@ -6,38 +6,107 @@ This file is for AI agents. Part 1 is for helping a user deploy and use Orrery; 
 
 ## Part 1: deploying and using Orrery
 
-### First: what to ask the user
+Pick your case:
 
-Setting up Orrery needs three things from the user. Ask for all three before any step:
+| The situation | Do this |
+| --- | --- |
+| The user wants Orrery set up, or `list_servers` is not among your tools | "Set up Orrery" below, step by step |
+| `list_servers` is among your tools | "Operate" |
+| The user wants a dashboard in claude.ai | "Publish the dashboard" |
 
-1. **The Orrery host**: one dedicated, always-on VPS. Orrery runs there, every client connects to it, and all credentials stay on it. It runs nothing else, and it is not a machine an assistant may stop or rebuild. Debian or Ubuntu, a public IPv4, root SSH access. Minimum: 2 vCPU, 2 GB of memory, 2 GB of swap, 20 GB of disk.
-2. **A domain on Cloudflare**, and the hostname Orrery gets on it, such as `orrery.example.com`.
-3. **A Cloudflare API token** for the install, which they create themselves (permissions below) and type into the installer. It never goes into the conversation.
+### Set up Orrery: follow these steps in order
 
-- Reaching the host: an agent on the user's computer can use their SSH access to it. An agent in a cloud session or a chat usually cannot reach it, so it hands the user the command to run there. Your own shell is not the Orrery host: never run the deploy command in it.
-- No such machine: the user creates one first, at any provider. Or they use the local mode in the client table below, which needs no server but runs on their own computer and offers only the SSH tools and read-only cloud listings.
+Do one step at a time. When a step asks the user for something, send it and wait for their answer before the next step. Speak the user's language. Words in CAPITALS are placeholders: replace them, and change nothing else in a command.
 
-### Deploy (run on the Orrery host as root)
+Three rules for the whole setup:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/sansheng777/Orrery/main/deploy/install.sh | bash -s -- orrery.example.com
-```
+- Never ask the user to send you a token, password, key or the connector URL, and never repeat one. If they send one anyway: an API token is deleted and created again; the connector token is rotated (`docs/security.md`, "Rotating secrets").
+- Never run the install command in your own shell or sandbox. It runs on the user's VPS, and the user starts it, even if you can reach the VPS: the installer shows secrets on its terminal.
+- Do not improvise other ways to install. If a step fails, use the table at the end.
 
-- The user runs this in their own terminal on the host, with their hostname (a domain they have on Cloudflare). It asks them for a Cloudflare API token, typed hidden, and ends by showing the connector URL, which holds the connector token. Run from a session without a terminal, it stops and asks for one; with `CLOUDFLARE_API_TOKEN` set it runs unattended and prints no token.
-- The Cloudflare token (My Profile > API Tokens > Create Custom Token): Account > Cloudflare Tunnel > Edit; Zone > Zone > Read, DNS > Edit, Zone WAF > Edit, limited to that domain. It is stored nowhere; the user deletes it afterwards.
-- What it does: installs Docker, adds 2 GB of swap if there is none, creates the tunnel, its route, the DNS record and a WAF rule that lets only claude.ai (`160.79.104.0/21`) reach the hostname, then starts Orrery and makes the host trust its key. It only adds things in Cloudflare and refuses a hostname that already has a DNS record. Run again without a hostname, it updates Orrery.
-- Clients on the user's computer need their IP allowed too: `ORRERY_ALLOW_IPS="203.0.113.30"` before `bash`, or `docs/deploy.md`, step 7.
-- Never ask for a tunnel token, API token, cloud credential or connector token in the conversation and never print one into it: conversations are stored. Cloud credentials come afterwards, one JSON file per provider in `deploy/data/` (`docs/providers.md`).
-- By hand, step by step, with tool approvals and SSH hardening: `docs/deploy.md`.
+**Step 1. Ask for what you need.** Send this, then wait:
+
+> To set up Orrery I need to know three things:
+> 1. Do you have a VPS used only for Orrery? It needs Debian or Ubuntu, at least 2 vCPU, 2 GB of memory and 20 GB of disk, and you must be able to log in to it as root.
+> 2. Do you have a domain whose DNS is managed by Cloudflare (the free plan is enough)? Which domain?
+> 3. Which AI client will you use Orrery with: claude.ai (web, desktop or mobile app), or a tool on your own computer such as Claude Code, Codex or Cursor?
+
+- No VPS: they rent one first, at any provider, with Debian 12 or Ubuntu 24.04 and at least that size. Wait until they have it. (Without a VPS there is only the local mode in "Connect a client", which can read but not control.) The 2 GB of swap Orrery wants is added by the installer.
+- The VPS already runs other things: advise a separate one. Orrery will hold the keys to all their servers.
+- The domain is not on Cloudflare: they add it at dash.cloudflare.com (Add a domain) and switch its nameservers at their registrar first. The installer cannot work until Cloudflare shows the domain as active.
+- A tool on their own computer: also ask for their public IP address (it must be a fixed one). It is THEIR_IP in step 4.
+
+**Step 2. Agree on the hostname.** Propose `orrery.DOMAIN`, for example `orrery.example.com`. It must be a new name that has no DNS record yet. It is HOSTNAME from here on.
+
+**Step 3. The user creates a Cloudflare API token.** Send this:
+
+> 1. Open https://dash.cloudflare.com/profile/api-tokens, choose **Create Token**, then **Create Custom Token**.
+> 2. Token name: `orrery-install`.
+> 3. Under **Permissions**, add these four rows:
+>    - Account > Cloudflare Tunnel > Edit
+>    - Zone > Zone > Read
+>    - Zone > DNS > Edit
+>    - Zone > Zone WAF > Edit
+> 4. Under **Zone Resources**, choose Include > Specific zone > DOMAIN.
+> 5. Choose **Continue to summary**, then **Create Token**, and copy the token. You need it in the next step. Do not send it to me.
+
+**Step 4. The user runs the installer on the VPS.** Send this, with the line that fits their client:
+
+> 1. Log in to the VPS (for example `ssh root@VPS_IP`, or the provider's web console). If you are not root, run `sudo -i` first.
+> 2. Paste this one line and press Enter:
+>    `curl -fsSL https://raw.githubusercontent.com/sansheng777/Orrery/main/deploy/install.sh | bash -s -- HOSTNAME`
+> 3. When it says `Paste the token (input hidden):`, paste the Cloudflare token and press Enter. Nothing appears while you paste. That is normal.
+> 4. Wait about five minutes, until it prints `Orrery is running at https://HOSTNAME`. Then tell me it is done. If it stops with an error, send me only the error line.
+> 5. At the end it prints a URL that contains a secret. Do not send me that URL or the text around it.
+
+For a tool on their own computer, the line in point 2 is this one instead (the variable goes after the `|`):
+
+`curl -fsSL https://raw.githubusercontent.com/sansheng777/Orrery/main/deploy/install.sh | ORRERY_ALLOW_IPS="THEIR_IP" bash -s -- HOSTNAME`
+
+**Step 5. The user adds Orrery to their AI client.** The URL the installer printed looks like `https://HOSTNAME/mcp/LONG_SECRET`. For claude.ai, send this:
+
+> In claude.ai, open Settings → Connectors → Add custom connector. Name: `Orrery`. URL: the one the installer printed.
+
+For another client, the user runs or enters what "Connect a client" shows, themselves, with LONG_SECRET as the token.
+
+**Step 6. The user sets the tool permissions.** Send this:
+
+> In the connector's settings, let the tools that only read run without asking: `list_servers`, `server_stats`, `server_pulse`, `cloud_providers`, `container_logs`, and every tool whose name ends in `_instances`, `_servers`, `_droplets` or `_query`. Keep every other tool on asking for your approval, so nothing changes without it.
+
+**Step 7. Check that it works.** The Orrery tools only show up in a new conversation, so send this:
+
+> Open a new conversation and write: "List my servers." The answer should show one server named `orrery-host`.
+
+If you are the assistant in that new conversation: call `list_servers`, then `server_stats` with the id of `orrery-host`. If both answer, the setup works.
+
+**Step 8. Finish.** Tell the user to delete the `orrery-install` token in Cloudflare, on the page from step 3: it is not needed again. Then offer what comes next, one at a time: adding their cloud accounts (`docs/providers.md`), making the host's SSH key-only (`docs/deploy.md`, step 9), onboarding their other servers (`ssh_bootstrap`), publishing the dashboard.
+
+If a step fails:
+
+| What the user sees | What to tell them |
+| --- | --- |
+| `Run this as root.` | Run `sudo -i` first, then the line again |
+| `This installer is for Debian and Ubuntu.` | Use a Debian or Ubuntu VPS, or follow `docs/deploy.md` by hand |
+| `Cloudflare did not accept the API token` | The token was cut off or is not active. Create a new one (step 3) and run the line again |
+| `The API token sees no zone for ...` | In step 3, Zone Resources must include that domain, and the domain must be active on Cloudflare |
+| `... already has a DNS record` | Choose another HOSTNAME, or delete that record in Cloudflare. Nothing was changed |
+| `No terminal to ask for the Cloudflare API token` | The line was started by a tool, not by a person. The user runs it in their own session on the VPS |
+| `Failed: ... (full log: /var/log/orrery-install.log)` | Ask for the output of `tail -n 30 /var/log/orrery-install.log`. It holds no secrets |
+| `Not connected yet` under "Waiting for the tunnel" | Ask for the output of `cd ~/orrery/deploy && docker compose logs --tail 30 tunnel` |
+| The client cannot connect, or gets 403 | Only claude.ai and the addresses given in step 4 may reach the hostname. To allow another address later, edit the WAF rule in Cloudflare: `docs/deploy.md`, step 7 |
+| The Orrery tools do not appear | Open a new conversation |
+| The user sent you the URL or a token | Do not repeat it. Tell them to rotate it: `docs/security.md`, "Rotating secrets" |
+
+About the installer: it installs Docker, adds 2 GB of swap if there is none, creates the tunnel, its route, the DNS record and a WAF rule that lets only claude.ai (`160.79.104.0/21`) and `ORRERY_ALLOW_IPS` reach the hostname, then starts Orrery and makes the host trust its key. In Cloudflare it only adds things, and the API token is stored nowhere. It shows the connector URL only when its output is a terminal. Run again without a hostname, it updates Orrery. The same setup by hand: `docs/deploy.md`.
 
 ### Connect a client
 
 | Client | How |
 | --- | --- |
 | claude.ai (web, desktop, mobile) | Settings → Connectors → Add custom connector. Name it `Orrery`. URL `https://<host>/mcp/<token>` |
-| Claude Code | `claude mcp add --transport http orrery https://<host>/mcp --header "Authorization: Bearer <token>"` |
+| Claude Code (the user runs it: it holds the token) | `claude mcp add --transport http orrery https://<host>/mcp --header "Authorization: Bearer <token>"` |
 | Codex, Cursor, Gemini CLI, other MCP clients | Remote Streamable HTTP server at `https://<host>/mcp` with header `Authorization: Bearer <token>` |
-| Local, no server | `npm install && node agent/src/index.js` (stdio; read-only cloud views plus SSH tools; credentials in `~/.orrery/`) |
+| Local, no server | A stdio server on the user's computer: read-only cloud views plus SSH tools, credentials in `~/.orrery/`. Setup: `docs/architecture.md`, "Running locally" |
 
 ### Publish the dashboard (claude.ai only)
 

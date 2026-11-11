@@ -22,10 +22,11 @@ Run it in your own terminal, with your hostname. It asks for a Cloudflare API to
 
 - The token: My Profile > API Tokens > Create Token > Create Custom Token, with Account > Cloudflare Tunnel > Edit and, for your domain, Zone > Zone > Read, DNS > Edit and Zone WAF > Edit. Delete it when the script is done.
 - It only adds things in Cloudflare. A hostname that already has a DNS record is refused, and existing WAF rules are left as they are.
-- `ORRERY_ALLOW_IPS="203.0.113.30 198.51.100.0/24"` before `bash` lets those addresses reach the hostname too (clients on your own computer). `CLOUDFLARE_API_TOKEN` replaces the prompt; without a terminal the connector token is not printed.
+- For clients on your own computer, let their addresses reach the hostname too, with the variable after the `|`: `curl ... | ORRERY_ALLOW_IPS="203.0.113.30 198.51.100.0/24" bash -s -- orrery.example.com`. This applies when the rule is created; later, edit the rule (step 7).
+- `CLOUDFLARE_API_TOKEN` replaces the prompt. The connector URL is shown only when the output is a terminal.
 - Run again without a hostname, it updates Orrery. Its log is `/var/log/orrery-install.log`.
 
-Then continue with step 3 (cloud credentials) and step 6. The rest of this page is the same setup by hand.
+Then continue with step 3 (cloud credentials), step 6 (your AI client and its tool permissions) and steps 8 to 10 (check, harden SSH, onboard your servers). The rest of this page is the same setup by hand.
 
 ## 1. Install Docker and get the code
 
