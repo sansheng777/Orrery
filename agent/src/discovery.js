@@ -192,6 +192,11 @@ export function applyLabel(s, labels = {}) {
 // The Orrery host first, so it is always the first thing you see.
 const selfFirst = (a, b) => Number(!!b.self) - Number(!!a.self);
 
+// The machine Orrery runs on, listed under this id while no provider finds it and no saved server
+// covers it. A new deployment so starts with one server: itself (enable-ssh.sh made it trust the key).
+const HOST_ID = "orrery-host";
+const hostEntry = (selfIp) => ({ id: HOST_ID, name: HOST_ID, host: selfIp, port: 22, username: "root", tags: [HOST_ID], source: "host", auth: "agent key", self: true });
+
 export function createDiscovery({ env = process.env, dataDir = DATA_DIR, providers = { aws, netcup, linode, gcp, aliyun, vultr, digitalocean, kamatera }, now = () => Date.now(), providerTimeoutMs = PROVIDER_TIMEOUT_MS } = {}) {
   const overridesFile = path.join(dataDir, "discovered.json");
   const labelsFile = path.join(dataDir, "labels.json");
@@ -332,12 +337,14 @@ export function createDiscovery({ env = process.env, dataDir = DATA_DIR, provide
     const hostIds = new Set(found.filter((d) => d.self).map((d) => match([d.host])?.id).filter(Boolean));
     const isHost = (s) => hostIds.has(s.id) || (!!selfIp && String(s.host).toLowerCase() === selfIp);
     const savedMarked = saved.map((s) => (isHost(s) ? { ...s, self: true } : s));
-    const servers = [...savedMarked, ...extra.filter((d) => !overrides[d.id]?.ignored)].map((s) => applyLabel(hostTag(s), labels)).sort(selfFirst);
+    const unlisted = selfIp && !found.some((d) => d.self) && !savedMarked.some((s) => s.self) ? [hostEntry(selfIp)] : [];
+    const servers = [...savedMarked, ...extra.filter((d) => !overrides[d.id]?.ignored), ...unlisted].map((s) => applyLabel(hostTag(s), labels)).sort(selfFirst);
     return { servers, ignored, errors };
   }
 
   // The full record (with provider details) for any id list() returns, ignored ones included.
   async function resolve(id) {
+    if (id === HOST_ID && selfIp) return applyLabel(hostEntry(selfIp), readLabels());
     if (!/^(netcup|ec2|lightsail|linode|gcp|aliyun|vultr|digitalocean|kamatera):/.test(id)) return applyLabel(getServer(id), readLabels());
     const saved = listServers();
     const match = await matchHosts({ servers: saved });

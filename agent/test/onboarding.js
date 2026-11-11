@@ -114,6 +114,23 @@ assert.ok(servers.some((s) => s.id === saved.id && s.port === 2222));
   removeServer(hostSaved.id);
 }
 
+// The Orrery host is listed even when no provider finds it and nobody saved it: a new deployment
+// without cloud credentials starts with one server.
+{
+  const alone = createDiscovery({ env: { ORRERY_SELF_IP: "203.0.113.200" }, dataDir, providers: {} });
+  ({ servers } = await alone.list());
+  const host = servers[0];
+  assert.deepEqual([host.id, host.host, host.username, host.self, host.tags], ["orrery-host", "203.0.113.200", "root", true, ["orrery-host"]]);
+  assert.equal((await alone.resolve("orrery-host")).host, "203.0.113.200");
+  const covering = addServer({ name: "the-host", host: "203.0.113.200", port: 2200, username: "root" });
+  ({ servers } = await alone.list());
+  assert.deepEqual(servers.filter((s) => s.self).map((s) => s.id), [covering.id], "a saved server that covers it takes its place");
+  removeServer(covering.id);
+  ({ servers } = await discovery.list());
+  assert.ok(!servers.some((s) => s.id === "orrery-host"), "a provider that finds the host lists it under its own id");
+  await assert.rejects(createDiscovery({ env: {}, dataDir, providers: {} }).resolve("orrery-host"), /Unknown server|not found/i);
+}
+
 discovery.remember("ec2:ap-northeast-1:i-012963bba8bfaa551", { username: "ec2-user" });
 assert.equal((await discovery.resolve("ec2:ap-northeast-1:i-012963bba8bfaa551")).username, "ec2-user", "what onboarding learns is kept");
 assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, "discovered.json"), "utf8"))["ec2:ap-northeast-1:i-012963bba8bfaa551"].username, "ec2-user");

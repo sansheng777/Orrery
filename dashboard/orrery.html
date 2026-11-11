@@ -1097,7 +1097,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
     if (matched) return named(matched);
     const tagged = (s.tags || []).map((t) => TAG_VENDOR[String(t).toLowerCase()]).find(Boolean);
     if (tagged) return named(tagged);
-    return s.source === "ssh_config" ? "SSH config" : "Added manually";
+    return s.source === "ssh_config" ? "SSH config" : s.source === "host" ? "This Orrery host" : "Added manually";
   }
   const vendorRank = (v) => {
     const base = v.split(" · ")[0];

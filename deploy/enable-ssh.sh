@@ -38,7 +38,7 @@ echo "   $SELF_IP"
 
 echo "== Building and starting"
 mkdir -p data && chown 1000:1000 data && chmod 700 data
-docker compose up -d --build
+docker compose up -d --build --quiet-pull
 
 echo "== Waiting for the connector's SSH key"
 for _ in $(seq 60); do
