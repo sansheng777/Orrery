@@ -6,7 +6,7 @@ Read [security.md](security.md) first: the Orrery host ends up holding credentia
 
 ## What you need
 
-- A small, dedicated VPS that stays on: the Orrery host. Debian or Ubuntu, a public IPv4 address and root SSH access with a key; 1 vCPU and 1 GB of memory are typically enough. Run nothing else on it.
+- A small, dedicated VPS that stays on: the Orrery host. Debian or Ubuntu, a public IPv4 address and root SSH access with a key. Minimum: 2 vCPU, 2 GB of memory, 2 GB of swap and 20 GB of disk. Run nothing else on it.
 - A domain whose DNS is on Cloudflare (the free plan is enough).
 - Credentials for each cloud you want to manage ([providers.md](providers.md)).
 
@@ -20,6 +20,13 @@ curl -fsSL https://get.docker.com | sh
 git clone https://github.com/sansheng777/Orrery ~/orrery
 cd ~/orrery/deploy
 mkdir -p data && chown 1000:1000 data && chmod 700 data
+```
+
+If `swapon --show` prints nothing, the host has no swap. Add 2 GB:
+
+```bash
+fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
 ```
 
 The container runs as uid 1000 (`node`), so `data/` must belong to it. All secrets live in `deploy/data/` and `deploy/.env`, which git and Docker ignore.

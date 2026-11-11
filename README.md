@@ -6,7 +6,7 @@ AI agents: start with [AGENTS.md](AGENTS.md). It has the deploy commands, client
 
 ## What you need
 
-- **One dedicated, always-on VPS: the Orrery host.** This is the one thing Orrery cannot do without. It runs there, your AI client connects to it, and every credential and the SSH key stay on it. Use a machine that runs nothing else: Debian or Ubuntu, a public IPv4, root SSH access. A small one will do: the two containers use about 200 MB of memory for a dozen servers.
+- **One dedicated, always-on VPS: the Orrery host.** This is the one thing Orrery cannot do without. It runs there, your AI client connects to it, and every credential and the SSH key stay on it. Use a machine that runs nothing else: Debian or Ubuntu, a public IPv4, root SSH access. Minimum: 2 vCPU, 2 GB of memory, 2 GB of swap and 20 GB of disk.
 - A domain on Cloudflare (the free plan is enough), for the tunnel that makes the host reachable without opening a port.
 - API credentials for the clouds you use.
 
