@@ -85,6 +85,15 @@ assert.equal(s.bridgeNetworks, 2);
 {
   const { splitIps } = await import("../src/ssh.js");
   assert.deepEqual(splitIps("", "1.2.3.4 172.17.0.1"), { ips: ["1.2.3.4", "172.17.0.1"], bridgeNetworks: 0 }, "without ip, hostname -I as before");
+  assert.deepEqual(splitIps("2: eth0@if7    inet 203.0.113.5/24 brd x\n3: docker0    inet 172.17.0.1/16", "").ips, ["203.0.113.5"], "an @peer suffix is dropped");
+  // A server cannot stall Orrery with a line built to make the pattern backtrack, nor with an endless line.
+  const hostile = "1: " + "@a".repeat(200000) + " inet x";
+  let started = Date.now();
+  splitIps(hostile, "");
+  assert.ok(Date.now() - started < 500, `splitIps took ${Date.now() - started} ms on a hostile line`);
+  started = Date.now();
+  const parsed = parseStats(`@@ipaddr\n${hostile}\n2: eth0    inet 203.0.113.5/24\n@@end\n`);
+  assert.ok(Date.now() - started < 500 && parsed.ips.includes("203.0.113.5"), "an oversized line is skipped, the rest is read");
 }
 // The live sampler: two consecutive blocks give CPU over the interval and network rates per second.
 const block = (up, stat, eth, lo, docker) => `@@t

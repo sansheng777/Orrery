@@ -19,6 +19,7 @@ export class Client extends EventEmitter {
     setImmediate(() => {
       // The host key comes before the login, as in a real handshake.
       if (opts.hostVerifier && opts.hostVerifier(Client.hostKey(opts.host)) === false) return this.emit("error", new Error("Host denied (verification failed)"));
+      this.emit("handshake", {});
       Client.refuse.has(opts.host) ? this.emit("error", new Error("All configured authentication methods failed")) : this.emit("ready");
     });
   }

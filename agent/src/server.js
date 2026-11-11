@@ -19,11 +19,22 @@ import * as aliyun from "../../providers/aliyun/index.js";
 import { createScp, serverStateRequest, protectedIps as netcupProtectedIps } from "../../providers/netcup/admin.js";
 
 // structuredContent must be a JSON object, so lists (SSH keys, snapshots, tasks) are wrapped as {items}.
-const ok = (data) => {
-  const structured = data && typeof data === "object" && !Array.isArray(data) ? data : { items: data };
-  return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: structured };
+// Orrery's own connector token must never come back in a result, whatever printed it: cloudflared
+// logs the connector URL when the agent is unreachable, and a command can read the token file.
+const hidden = new Set();
+export const hideFromResults = (value) => value && hidden.add(String(value));
+const scrub = (text) => {
+  for (const secret of hidden) text = text.split(secret).join("[connector token]");
+  return text;
 };
-const fail = (err) => ({ isError: true, content: [{ type: "text", text: err?.message || String(err) }] });
+const ok = (data) => {
+  const raw = JSON.stringify(data) ?? "null";
+  const text = scrub(raw);
+  const value = text === raw ? data : JSON.parse(text);
+  const structured = value && typeof value === "object" && !Array.isArray(value) ? value : { items: value };
+  return { content: [{ type: "text", text }], structuredContent: structured };
+};
+const fail = (err) => ({ isError: true, content: [{ type: "text", text: scrub(err?.message || String(err)) }] });
 const tool = (fn) => async (args) => {
   try {
     return ok(await fn(args ?? {}));
@@ -42,6 +53,9 @@ const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true };
 export const ALLOW_EXEC = process.env.ORRERY_ALLOW_EXEC !== "0";
 
 const CONTAINER = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/, "container name or id");
+// orrery-host marks the machine no tool may stop; only discovery hands it out.
+const notHostTag = (t) => t.trim().toLowerCase() !== "orrery-host";
+const RESERVED_TAG = "orrery-host marks the Orrery host and cannot be given by hand";
 
 async function docker(srv, args, timeoutSec = 30) {
   const cmd = `if docker info >/dev/null 2>&1; then docker ${args}; else sudo -n docker ${args}; fi`;
@@ -141,6 +155,7 @@ function createHubServer() {
 function registerSshTools(server, { allowExec, change, onboarding = false }) {
   const { discovery, authFailures } = sharedState();
   const resolve = (id) => discovery.resolve(id);
+  let overview = null; // the fleet_overview being built, if any
   // server_stats and the live sampler share the login backoff, so live figures cannot hammer a host that refuses us.
   async function probe(id, run) {
     const server = await resolve(id);
@@ -181,7 +196,7 @@ function registerSshTools(server, { allowExec, change, onboarding = false }) {
       inputSchema: {
         id: z.string(),
         label: z.string().max(64).optional(),
-        tags: z.array(z.string().min(1).max(24)).max(8).optional(),
+        tags: z.array(z.string().min(1).max(24).refine(notHostTag, RESERVED_TAG)).max(8).optional(),
         note: z.string().max(200).optional(),
       },
       annotations: WRITE,
@@ -203,8 +218,7 @@ function registerSshTools(server, { allowExec, change, onboarding = false }) {
       annotations: WRITE,
     },
     change("ignore_server", async ({ id, ignored }) => {
-      const s = await resolve(id);
-      discovery.remember(id, { ignored });
+      const s = await discovery.ignore(id, ignored);
       return { id, name: s.name, host: s.host, ignored };
     }),
   );
@@ -222,12 +236,17 @@ function registerSshTools(server, { allowExec, change, onboarding = false }) {
         username: z.string().min(1),
         keyPath: z.string().optional(),
         password: z.string().optional(),
-        tags: z.array(z.string()).optional(),
+        tags: z.array(z.string().refine(notHostTag, RESERVED_TAG)).optional(),
       },
       annotations: WRITE,
     },
     change("add_server", async (a) => {
+      // A saved server replaces a listed one with the same address. It is the same machine, so it keeps
+      // the pinned host keys instead of trusting whatever answers next.
+      const covered = (await discovery.list()).servers.filter((s) => String(s.host).toLowerCase() === a.host.trim().toLowerCase());
+      const pins = [...new Set(covered.flatMap((s) => hostKeys.pinned(s.id)))];
       const saved = addServer(a);
+      if (pins.length) hostKeys.pin(saved.id, pins);
       authFailures.clear();
       return saved;
     }),
@@ -246,7 +265,7 @@ function registerSshTools(server, { allowExec, change, onboarding = false }) {
         username: z.string().min(1).optional(),
         keyPath: z.string().optional(),
         password: z.string().optional(),
-        tags: z.array(z.string()).optional(),
+        tags: z.array(z.string().refine(notHostTag, RESERVED_TAG)).optional(),
       },
       annotations: WRITE,
     },
@@ -255,7 +274,8 @@ function registerSshTools(server, { allowExec, change, onboarding = false }) {
       const saved = updateServer(id, patch);
       dropConnections(id); // a new address or login must not keep using the old connection
       live.forget(id);
-      if (patch.host !== undefined || patch.port !== undefined) hostKeys.forget(id); // another address: its key is pinned afresh
+      // The pinned host key stays: if the new address is another machine, the next connection is
+      // refused and accept_host_key decides.
       return saved;
     }),
   );
@@ -288,6 +308,9 @@ function registerSshTools(server, { allowExec, change, onboarding = false }) {
     },
     change("accept_host_key", async ({ id, fingerprint }) => {
       const s = await resolve(id);
+      if (!hostKeys.wasRefused(id, fingerprint)) {
+        throw new Error(`Orrery has not refused that key for ${s.name || id} in the last hour. Connect to the server first (server_stats): the refusal names the fingerprint that can be accepted.`);
+      }
       hostKeys.pin(id, [fingerprint]);
       dropConnections(id);
       live.forget(id);
@@ -318,8 +341,12 @@ function registerSshTools(server, { allowExec, change, onboarding = false }) {
     },
     async () => {
       try {
-        const { servers, errors } = await discovery.list();
-        return { content: [{ type: "text", text: await buildOverview({ servers, errors, probe: (s) => probe(s.id, stats) }) }] };
+        // Callers that ask at the same time share one round of probes.
+        overview ||= discovery
+          .list()
+          .then(({ servers, errors }) => buildOverview({ servers, errors, probe: (s) => probe(s.id, stats) }))
+          .finally(() => (overview = null));
+        return { content: [{ type: "text", text: scrub(await overview) }] };
       } catch (err) {
         return fail(err);
       }

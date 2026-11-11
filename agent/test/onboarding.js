@@ -136,6 +136,11 @@ assert.equal((await discovery.resolve("ec2:ap-northeast-1:i-012963bba8bfaa551"))
 assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, "discovered.json"), "utf8"))["ec2:ap-northeast-1:i-012963bba8bfaa551"].username, "ec2-user");
 await assert.rejects(discovery.resolve("netcup:1"), /Unknown server/);
 
+// The Orrery host cannot be hidden; any other discovered machine can.
+await assert.rejects(discovery.ignore("netcup:400001", true), /Orrery host stays listed/);
+assert.ok((await discovery.list()).servers.some((s) => s.id === "netcup:400001"));
+assert.equal((await discovery.ignore("netcup:400001", false)).id, "netcup:400001", "un-ignoring is always allowed");
+
 discovery.remember("lightsail:ap-northeast-1:tokyo-1", { ignored: true });
 let ignored;
 ({ servers, ignored } = await discovery.list());
@@ -346,6 +351,27 @@ const base = { publicKey: () => PUB, keyPath: "/data/keys/id_ed25519", discovery
   assert.equal(j.status, "done", j.error);
   assert.deepEqual(pushed, ["ubuntu", "ec2-user"]);
   assert.deepEqual(remembered.pop(), ["ec2:ap-northeast-1:i-012963bba8bfaa551", "ec2-user"]);
+}
+
+// A changed host key is not a login to fix: the job stops there, and no provider is asked to push a
+// key, change metadata, run a command or restart anything on a machine that may be another one.
+{
+  const touched = [];
+  const refusal = Object.assign(new Error('The SSH host key of web (198.51.100.7) changed: expected SHA256:a, got SHA256:b. Ask the user, then call accept_host_key'), { code: "HOST_KEY_CHANGED" });
+  const b = createBootstrapper({
+    ...base,
+    exec: async () => Promise.reject(refusal),
+    aws: { config: {}, sendSshPublicKey: async () => touched.push("ec2"), lightsailAccess: async () => touched.push("lightsail") },
+    gcp: { addSshKey: async () => touched.push("gcp") },
+    aliyun: { runShell: async () => touched.push("aliyun") },
+    netcup: { scp: { request: async () => touched.push("netcup") } },
+  });
+  for (const target of [fromAws(ec2), fromAws(ls)]) {
+    const j = await waitJob(b, b.start(target).id);
+    assert.equal(j.status, "failed");
+    assert.match(j.error, /host key of web .* changed.*accept_host_key/);
+  }
+  assert.deepEqual(touched, [], "no provider was called");
 }
 
 // EC2: logged in, but the key cannot be written: that is the error, and no other user is tried.

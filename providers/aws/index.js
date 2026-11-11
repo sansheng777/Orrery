@@ -469,13 +469,17 @@ export async function lightsailAccess(config, { region, instanceName }) {
   const res = await client(config, lightsail.LightsailClient, region).send(new lightsail.GetInstanceAccessDetailsCommand({ instanceName, protocol: "ssh" }));
   const d = res.accessDetails || {};
   if (!d.privateKey || !d.certKey || !d.ipAddress) throw new Error(`Lightsail returned no SSH access details for ${instanceName}`);
-  return { username: d.username, host: d.ipAddress, privateKey: d.privateKey, certificate: d.certKey, hostKeys: list(d.hostKeys).map(hostKeyLine).filter(Boolean) };
+  // Both end up on an ssh command line.
+  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(d.username || "") || !/^\d{1,3}(\.\d{1,3}){3}$/.test(d.ipAddress)) throw new Error(`Lightsail returned an unusable login for ${instanceName}`);
+  const listed = list(d.hostKeys);
+  return { username: d.username, host: d.ipAddress, privateKey: d.privateKey, certificate: d.certKey, hostKeys: listed.map(hostKeyLine).filter(Boolean), hostKeysListed: listed.length };
 }
 
 // A host key as Lightsail recorded it -> the "<algorithm> <base64>" of a known_hosts line. Anything that
 // is not an SSH public key of that algorithm is left out, so an unexpected answer cannot break onboarding.
 export function hostKeyLine({ algorithm, publicKey } = {}) {
   const b64 = String(publicKey || "").trim().split(/\s+/).pop();
+  if (!/^[a-z0-9][a-z0-9@._-]{2,63}$/.test(algorithm || "") || !/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return null;
   const blob = Buffer.from(b64, "base64");
   const named = blob.length > 4 && blob.subarray(4, 4 + blob.readUInt32BE(0)).toString() === algorithm;
   return named ? `${algorithm} ${b64}` : null;

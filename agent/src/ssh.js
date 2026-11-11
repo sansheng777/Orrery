@@ -1,4 +1,5 @@
 // SSH connections (pooled per server) and the remote probes behind the dashboard.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,8 +14,9 @@ const DEFAULT_KEYS = [KEY_PATH, ...["id_ed25519", "id_ecdsa", "id_rsa"].map((k) 
 
 const pool = new Map(); // poolKey -> { promise, client, timer, serverId }
 
-// onHostKeyRefused(err) is called when the server presents a host key other than its pinned one.
-function connectOptions(server, onHostKeyRefused) {
+// onHostKeyRefused(err) is called when the server presents a host key other than its pinned one;
+// onFirstKey(fingerprint) when it presents one and nothing is pinned yet.
+function connectOptions(server, onHostKeyRefused, onFirstKey) {
   const opts = {
     host: server.host,
     port: server.port || 22,
@@ -27,9 +29,18 @@ function connectOptions(server, onHostKeyRefused) {
   if (!server.anyHostKey) {
     opts.hostVerifier = (key) => {
       const got = hostKeys.fingerprint(key);
-      const { ok, expected } = hostKeys.check(server.id, got);
-      if (!ok) onHostKeyRefused(hostKeyChanged(server, expected, got));
-      return ok;
+      try {
+        const { ok, expected, first } = hostKeys.check(server.id, got);
+        if (first) onFirstKey(got);
+        if (!ok) {
+          hostKeys.noteRefused(server.id, got);
+          onHostKeyRefused(hostKeyChanged(server, expected, got));
+        }
+        return ok;
+      } catch (e) {
+        onHostKeyRefused(new Error(`Not connecting to ${server.name || server.host}: its pinned host key cannot be checked (${e.message})`));
+        return false;
+      }
     };
   }
   // Every credential in turn: password, then the given key (or each default key that exists), then
@@ -53,11 +64,16 @@ function connectOptions(server, onHostKeyRefused) {
   return opts;
 }
 
+// code lets callers tell this refusal from a login that merely failed (onboarding must not go on after it).
+export const HOST_KEY_CHANGED = "HOST_KEY_CHANGED";
 const hostKeyChanged = (server, expected, got) =>
-  new Error(
-    `The SSH host key of ${server.name || server.host} (${server.host}) changed: expected ${expected.join(" or ")}, got ${got}. ` +
-      `That is normal after the server was reinstalled or replaced; otherwise something else may be answering at its address. ` +
-      `Not connecting. Ask the user, then call accept_host_key with id "${server.id}" and fingerprint "${got}".`,
+  Object.assign(
+    new Error(
+      `The SSH host key of ${server.name || server.host} (${server.host}) changed: expected ${expected.join(" or ")}, got ${got}. ` +
+        `That is normal after the server was reinstalled or replaced; otherwise something else may be answering at its address. ` +
+        `Not connecting. Ask the user, then call accept_host_key with id "${server.id}" and fingerprint "${got}".`,
+    ),
+    { code: HOST_KEY_CHANGED },
   );
 
 // (Re)starts a pooled connection's idle timer. A connection with a command still running is kept.
@@ -94,7 +110,19 @@ function getEntry(server) {
   const entry = { client, timer: null, serverId: server.id, busy: 0 };
   entry.promise = new Promise((resolve, reject) => {
     let hostKeyRefused = null;
+    let firstKey = null;
     client
+      // The key exchange is done: the server proved it holds the key it presented. Only now is a
+      // first-seen key pinned.
+      .once("handshake", () => {
+        if (!firstKey) return;
+        try {
+          hostKeys.pin(server.id, [firstKey]);
+          console.error(`[host key] pinned ${firstKey} for ${server.id} on first connection`);
+        } catch (e) {
+          console.error(`[host key] could not pin ${server.id}: ${e.message}`);
+        }
+      })
       .once("ready", () => resolve(client))
       // ssh2 can report more than one error per connection; one without a listener would crash the process.
       .on("error", (err) => {
@@ -108,7 +136,7 @@ function getEntry(server) {
         // so without this the caller would wait forever. After "ready" this does nothing.
         reject(new Error(`SSH to ${server.username}@${server.host}:${server.port || 22} closed before it was ready`));
       });
-    client.connect(connectOptions(server, (e) => (hostKeyRefused = e)));
+    client.connect(connectOptions(server, (e) => (hostKeyRefused = e), (fp) => (firstKey = fp)));
   });
   // A connection that never came up (unreadable key, refused login) is not kept: the next call tries again.
   entry.promise.catch(() => drop(key, entry));
@@ -293,10 +321,12 @@ while [ $i -lt 600 ]; do
 done
 `;
 
+const MAX_STATS_LINE = 4096;
 function sections(text) {
   const out = {};
   let name = null;
   for (const line of text.split("\n")) {
+    if (line.length > MAX_STATS_LINE) continue; // nothing the script prints is this long; a hostile server's line is not parsed
     const m = line.match(/^@@(\w+)$/);
     if (m) {
       name = m[1];
@@ -358,7 +388,7 @@ export function splitIps(ipaddr, hostnameI) {
   const ips = [];
   const bridges = new Set();
   for (const l of lines) {
-    const m = l.match(/^\d+:\s+(\S+?)(?:@\S+)?\s+inet6?\s+([0-9a-fA-F.:]+)\//);
+    const m = l.match(/^\d+:\s+([^\s@]+)(?:@\S+)?\s+inet6?\s+([0-9a-fA-F.:]+)\//);
     if (!m) continue;
     if (VIRTUAL_IF.test(m[1])) bridges.add(m[1]);
     else if (!ips.includes(m[2])) ips.push(m[2]);
@@ -508,7 +538,8 @@ export const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 // Runs a command in a working directory and reports the directory it ended in,
 // so the dashboard's console can keep `cd` between commands.
 export async function runInDir(server, command, cwd, timeoutSec) {
-  const marker = "__ORRERY_CWD__";
+  // A marker the command's own output cannot contain by accident or by design.
+  const marker = `__ORRERY_CWD_${crypto.randomBytes(8).toString("hex")}__`;
   // A cwd that does not exist fails the call instead of running the command somewhere else.
   const dir = !cwd ? "~" : cwd === "~" ? '"$HOME"' : cwd.startsWith("~/") ? `"$HOME"/${quote(cwd.slice(2))}` : quote(cwd);
   const shown = String(cwd || "~").replace(/[^\w./~ -]/g, "?");
@@ -523,7 +554,7 @@ exit $__rc`;
   let output = res.stdout;
   let newCwd = cwd || null;
   if (idx !== -1) {
-    newCwd = res.stdout.slice(idx + marker.length + 1).trim() || newCwd;
+    newCwd = res.stdout.slice(idx + marker.length + 1).split("\n")[0].trim() || newCwd;
     output = res.stdout.slice(0, idx);
   }
   return { output, stderr: res.stderr, exitCode: res.code, cwd: newCwd, truncated: res.truncated, timedOut: res.timedOut, ms: res.ms };

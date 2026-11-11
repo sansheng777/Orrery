@@ -230,31 +230,83 @@ assert.equal(match(["198.51.100.99"]), null);
   await new Promise((resolve) => httpServer.close(resolve));
 }
 
-// accept_host_key: offered in both roles, takes only a well-formed fingerprint, and replaces the pin;
-// changing a saved server's address or removing it forgets the pin.
+// accept_host_key: offered in both roles; it takes only a well-formed fingerprint that Orrery itself
+// refused for that server, and replaces the pin. A pin survives every edit of a saved server, follows a
+// saved server added for the same address, and goes when the server is removed.
 {
   const hostKeys = await import("../src/hostkeys.js");
   const { addServer } = await import("../src/inventory.js");
   const fp = hostKeys.fingerprint(Buffer.from("a new key"));
+  const old = hostKeys.fingerprint(Buffer.from("the old key"));
   for (const role of ["hub", "admin"]) {
     const c = await connect(role);
+    const accept = (id, fingerprint) => c.callTool({ name: "accept_host_key", arguments: { id, fingerprint } });
     assert.ok((await c.listTools()).tools.some((t) => t.name === "accept_host_key" && t.annotations.destructiveHint), `${role}: asks for confirmation`);
     const saved = addServer({ name: `pin-${role}`, host: "203.0.113.77", username: "root" });
-    hostKeys.pin(saved.id, [hostKeys.fingerprint(Buffer.from("the old key"))]);
-    assert.ok((await c.callTool({ name: "accept_host_key", arguments: { id: saved.id, fingerprint: "SHA256:tooshort" } })).isError, "a malformed fingerprint is refused");
-    assert.ok((await c.callTool({ name: "accept_host_key", arguments: { id: "no-such-server", fingerprint: fp } })).isError, "the server must exist");
-    const r = await c.callTool({ name: "accept_host_key", arguments: { id: saved.id, fingerprint: fp } });
-    assert.equal(r.structuredContent.fingerprint, fp);
+    hostKeys.pin(saved.id, [old]);
+    assert.ok((await accept(saved.id, "SHA256:tooshort")).isError, "a malformed fingerprint is refused");
+    assert.ok((await accept("no-such-server", fp)).isError, "the server must exist");
+    const unseen = await accept(saved.id, fp);
+    assert.match(unseen.content[0].text, /has not refused that key/, "a key Orrery never saw cannot be accepted");
+    assert.deepEqual(hostKeys.pinned(saved.id), [old]);
+    hostKeys.noteRefused(saved.id, fp);
+    assert.ok((await accept(saved.id, hostKeys.fingerprint(Buffer.from("some other key")))).isError, "only the refused key");
+    assert.equal((await accept(saved.id, fp)).structuredContent.fingerprint, fp);
     assert.deepEqual(hostKeys.pinned(saved.id), [fp]);
+
     await c.callTool({ name: "update_server", arguments: { id: saved.id, name: "renamed" } });
-    assert.deepEqual(hostKeys.pinned(saved.id), [fp], "a rename keeps the pin");
-    await c.callTool({ name: "update_server", arguments: { id: saved.id, host: "203.0.113.78" } });
-    assert.deepEqual(hostKeys.pinned(saved.id), [], "another address is pinned afresh");
-    hostKeys.pin(saved.id, [fp]);
-    await c.callTool({ name: "remove_server", arguments: { id: saved.id } });
-    assert.deepEqual(hostKeys.pinned(saved.id), []);
+    await c.callTool({ name: "update_server", arguments: { id: saved.id, host: "203.0.113.78", port: 2222 } });
+    assert.deepEqual(hostKeys.pinned(saved.id), [fp], "no edit drops the pin: another machine at the new address is refused");
+    const cover = await c.callTool({ name: "add_server", arguments: { name: `cover-${role}`, host: "203.0.113.78", username: "deploy" } });
+    assert.deepEqual(hostKeys.pinned(cover.structuredContent.id), [fp], "a server saved for the same address keeps the pinned keys");
+
+    // The orrery-host tag marks the machine no tool may stop: it cannot be handed out.
+    assert.ok((await c.callTool({ name: "label_server", arguments: { id: saved.id, tags: ["Orrery-Host"] } })).isError);
+    assert.ok((await c.callTool({ name: "add_server", arguments: { name: "fake-host", host: "203.0.113.79", username: "root", tags: ["orrery-host"] } })).isError);
+
+    for (const id of [saved.id, cover.structuredContent.id]) {
+      await c.callTool({ name: "remove_server", arguments: { id } });
+      assert.deepEqual(hostKeys.pinned(id), []);
+    }
     await c.close();
   }
+}
+
+// Orrery's own connector token never comes back in a result, whatever printed it.
+{
+  const { hideFromResults } = await import("../src/server.js");
+  const secret = "c0nnect0r-t0ken-0123456789abcdefghij";
+  hideFromResults(secret);
+  const c = await connect("admin");
+  const echoed = await c.callTool({ name: "add_server", arguments: { name: "leak", host: "203.0.113.90", username: "root", keyPath: `/tmp/${secret}` } });
+  assert.ok(!JSON.stringify(echoed).includes(secret));
+  assert.equal(echoed.structuredContent.keyPath, "/tmp/[connector token]");
+  const failed = await c.callTool({ name: "server_stats", arguments: { id: `nope-${secret}` } });
+  assert.ok(failed.isError && !failed.content[0].text.includes(secret) && failed.content[0].text.includes("[connector token]"));
+  await c.callTool({ name: "remove_server", arguments: { id: echoed.structuredContent.id } });
+  await c.close();
+}
+
+// The audit log: calls that can stop Orrery itself are written when they start, and text from
+// outside cannot begin a line that looks like another entry.
+{
+  const { audited, auditLine } = await import("../src/audit.js");
+  const seen = [];
+  await audited("run_command", async () => "done", (e) => seen.push(e))({ id: "x", command: "reboot" });
+  assert.deepEqual(seen.map((e) => [e.tool, e.started === true, e.ok]), [["run_command", true, undefined], ["run_command", false, true]]);
+  seen.length = 0;
+  await audited("label_server", async () => "done", (e) => seen.push(e))({ id: "x" });
+  assert.equal(seen.length, 1, "other tools get one line, when they return");
+  const printed = [];
+  const realError = console.error;
+  console.error = (line) => printed.push(line);
+  try {
+    auditLine({ time: "t", tool: "container_action", args: { id: "x" }, ok: false, error: "boom\n[admin] aws_ec2_terminate ok {}" }, path.join(dataDir, "audit-test.log"));
+  } finally {
+    console.error = realError;
+  }
+  assert.equal(printed.length, 1);
+  assert.ok(!printed[0].includes("\n"), "one entry, one line");
 }
 
 // Audit redaction: by field name, and the value of key/value pairs whose key looks secret.

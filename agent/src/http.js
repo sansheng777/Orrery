@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createServer, ROLE } from "./server.js";
+import { createServer, hideFromResults, ROLE } from "./server.js";
 import { DATA_DIR } from "./inventory.js";
 
 const MAX_BODY = 1024 * 1024;
@@ -18,14 +18,18 @@ function loadToken() {
     return fromEnv;
   }
   const file = path.join(DATA_DIR, "token");
+  let saved = "";
   try {
-    return fs.readFileSync(file, "utf8").trim();
+    saved = fs.readFileSync(file, "utf8").trim();
   } catch {
-    const token = crypto.randomBytes(24).toString("base64url");
-    fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(file, token + "\n", { mode: 0o600 });
-    return token;
+    // no token yet
   }
+  if (saved.length >= 32) return saved;
+  if (saved) throw new Error(`${file} holds fewer than 32 characters. Delete it and start again to get a new token.`);
+  const token = crypto.randomBytes(24).toString("base64url");
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, token + "\n", { mode: 0o600 });
+  return token;
 }
 
 function sameToken(a, b) {
@@ -65,6 +69,7 @@ const send = (res, status, body) => {
 
 export async function startHttp({ port = Number(process.env.PORT) || 8787, host = process.env.HOST || "127.0.0.1" } = {}) {
   const token = loadToken();
+  hideFromResults(token);
   const handle = async (req, res) => {
     let url;
     try {

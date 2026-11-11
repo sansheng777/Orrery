@@ -3,10 +3,24 @@
 // one-call answer to "how are my servers doing?" for every client.
 
 const MAX_SERVERS = 50; // as many as server_pulse takes in one call
-const TIMEOUT_MS = 20000; // per server; all are asked at once, so this also bounds the whole call
+const TIMEOUT_MS = 20000; // per server; all are asked at once, so the probes together take no longer
+const MAX_ATTENTION = 4; // items per server; the rest are counted
 
-// Names, hosts and error texts come from providers and servers: one line, no table breaks.
-const cell = (v, max = 60) => String(v ?? "").replace(/[\r\n|]+/g, " ").trim().slice(0, max);
+// Names, mount points, container names and error texts come from providers and servers, so they are
+// shown literally: one line, no control or direction characters, and inside a code span, where a
+// client renders no link, image or HTML. A host is cut down to the characters an address can have.
+const literal = (v, max) =>
+  String(v ?? "")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]+/g, " ")
+    .replace(/[|`\\]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+const code = (v, max = 60) => {
+  const text = literal(v, max);
+  return text ? `\`${text}\`` : "";
+};
+const address = (v) => String(v ?? "").replace(/[^A-Za-z0-9.:_-]/g, "").slice(0, 45);
 const pct = (v) => (Number.isFinite(v) ? `${Math.round(v)}%` : "");
 const size = (bytes) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return "";
@@ -21,12 +35,14 @@ const uptime = (sec) => {
 
 // One row from a server_stats answer, or from the error that kept us from getting one.
 export function overviewRow(server, stats, error) {
-  const row = { server: `${cell(server.name || server.id, 40)} (${cell(server.host, 45)})`, id: server.id, state: "up", attention: [] };
+  const row = { server: `${code(server.name || server.id, 40)} (${address(server.host)})`, id: server.id, state: "up", attention: [] };
   if (server.state === "stopped") return { ...row, state: "stopped" };
   if (!stats) {
-    const why = /authentication methods failed/i.test(error?.message || "")
-      ? "login refused: onboard it with ssh_bootstrap"
-      : cell(error?.message || "no answer", 110);
+    const why = error?.code === "HOST_KEY_CHANGED"
+      ? "SSH host key changed: server_stats says what to do"
+      : /authentication methods failed/i.test(error?.message || "")
+        ? "login refused: onboard it with ssh_bootstrap"
+        : code(error?.message || "no answer", 110);
     return { ...row, state: "unreachable", attention: [why] };
   }
   const disks = stats.disks?.length ? stats.disks : stats.disk ? [stats.disk] : [];
@@ -34,17 +50,18 @@ export function overviewRow(server, stats, error) {
   const containers = stats.docker?.containers || [];
   const stopped = containers.filter((c) => c.state !== "running");
   const cores = stats.cpu?.cores || 1;
-  for (const d of disks.filter((x) => x.percent >= 90)) row.attention.push(`disk ${cell(d.mount, 30)} ${pct(d.percent)}`);
+  for (const d of disks.filter((x) => x.percent >= 90)) row.attention.push(`disk ${code(d.mount, 30)} ${pct(d.percent)}`);
   if (stats.memory?.percent >= 90) row.attention.push(`memory ${pct(stats.memory.percent)}`);
   if (stats.load?.m5 >= cores * 2) row.attention.push(`load ${stats.load.m5} on ${cores} ${cores === 1 ? "core" : "cores"}`);
-  if (stopped.length) row.attention.push(`not running: ${stopped.slice(0, 3).map((c) => cell(c.name, 30)).join(", ")}${stopped.length > 3 ? ` and ${stopped.length - 3} more` : ""}`);
+  if (stopped.length) row.attention.push(`not running: ${stopped.slice(0, 3).map((c) => code(c.name, 30)).join(", ")}${stopped.length > 3 ? ` and ${stopped.length - 3} more` : ""}`);
   if (stats.rebootRequired) row.attention.push("reboot required");
+  if (row.attention.length > MAX_ATTENTION) row.attention.splice(MAX_ATTENTION - 1, Infinity, `and ${row.attention.length - MAX_ATTENTION + 1} more`);
   return {
     ...row,
     cpu: pct(stats.cpu?.percent),
     memory: of(stats.memory?.percent, stats.memory?.total),
     disk: root ? of(root.percent, root.total) : "",
-    load: stats.load?.m1 ?? "",
+    load: Number.isFinite(stats.load?.m1) ? stats.load.m1 : "",
     containers: containers.length ? `${containers.length - stopped.length}/${containers.length}` : "",
     uptime: uptime(stats.uptimeSec),
   };
@@ -63,7 +80,7 @@ export function overviewText(rows, { now = new Date(), more = 0, errors = [] } =
   ];
   if (!rows.length) lines.push("", "No servers yet. Add cloud credentials (docs/providers.md) or a server with add_server.");
   if (more) lines.push("", `${more} more ${more === 1 ? "server is" : "servers are"} not shown. Ask for them with server_stats.`);
-  for (const e of errors) lines.push("", `Provider ${cell(e.provider || e.source || "?", 20)} did not answer: ${cell(e.error || e.message, 110)}`);
+  for (const e of errors.slice(0, 10)) lines.push("", `Provider ${address(e.provider || "?")} did not answer: ${code(e.error || e.message, 110)}`);
   lines.push("", "Details of one server: server_stats with its id. Ids: list_servers.");
   return lines.join("\n");
 }

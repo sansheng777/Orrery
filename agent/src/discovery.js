@@ -355,7 +355,16 @@ export function createDiscovery({ env = process.env, dataDir = DATA_DIR, provide
     return applyLabel(s, readLabels());
   }
 
-  return { list, resolve, remember, setLabel, selfIp };
+  // Hides a discovered machine from the listing, or brings it back. Never the Orrery host: it is the
+  // machine no tool may stop, so it stays where every assistant sees it.
+  async function ignore(id, ignored) {
+    const s = await resolve(id);
+    if (ignored && s.self) throw new Error("The Orrery host stays listed: it is the machine no tool may stop.");
+    remember(id, { ignored });
+    return s;
+  }
+
+  return { list, resolve, remember, ignore, setLabel, selfIp };
 }
 
 const pick = (o = {}) => Object.fromEntries(Object.entries(o).filter(([k]) => ["username", "port", "keyPath", "bootstrappedAt"].includes(k)));

@@ -113,6 +113,8 @@ assert.equal(big.truncated, true);
   assert.ok(refused.message.includes(first) && refused.message.includes(other), "the message carries both fingerprints");
   assert.match(refused.message, /accept_host_key with id "hk1" and fingerprint "SHA256:/);
   assert.deepEqual(hostKeys.pinned("hk1"), [first], "a refused key is not pinned");
+  assert.equal(refused.code, "HOST_KEY_CHANGED", "callers can tell it from a failed login");
+  assert.ok(hostKeys.wasRefused("hk1", other) && !hostKeys.wasRefused("hk1", first) && !hostKeys.wasRefused("hk2", other), "the refused key is remembered for accept_host_key");
   await assert.rejects(exec(pinnedSrv, "where"), /changed/, "and stays refused");
 
   hostKeys.pin("hk1", [other]); // what accept_host_key does
@@ -129,6 +131,30 @@ assert.equal(big.truncated, true);
   assert.deepEqual(hostKeys.pinned("hk2"), []);
   hostKeys.forget("hk1");
   assert.deepEqual(hostKeys.pinned("hk1"), []);
+
+  // A key is pinned only once the key exchange is done, not when it is merely presented.
+  Client.stall.add("203.0.113.52");
+  const stalled = { ...srv, id: "hk3", host: "203.0.113.52" };
+  exec(stalled, "where").catch(() => {});
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(hostKeys.pinned("hk3"), [], "nothing is pinned for a handshake that never finishes");
+  dropConnections("hk3");
+  Client.stall.delete("203.0.113.52");
+
+  // A pin file that cannot be trusted refuses every connection instead of accepting any key and
+  // overwriting the other servers' pins.
+  const file = path.join(dataDir, "known_hosts.json");
+  hostKeys.pin("hk4", [hostKeys.fingerprint(Buffer.from("the right key"))]);
+  const good = fs.readFileSync(file, "utf8");
+  for (const damaged of ["", "{ not json", "[]", "null"]) {
+    fs.writeFileSync(file, damaged);
+    await assert.rejects(exec({ ...srv, id: "hk4", host: "203.0.113.53" }, "where"), /pinned host key cannot be checked.*damaged/, `damaged file: ${JSON.stringify(damaged)}`);
+    assert.equal(fs.readFileSync(file, "utf8"), damaged, "and is left as it was");
+  }
+  fs.writeFileSync(file, good);
+  await assert.rejects(exec({ ...srv, id: "hk4", host: "203.0.113.53" }, "where"), /changed/, "with the file back, the pin holds");
+  fs.rmSync(file);
+  assert.equal(await where({ ...srv, id: "hk5", host: "203.0.113.54" }), "203.0.113.54:22", "a missing file is simply an empty one");
 }
 
 // A refused channel (sshd MaxSessions) fails that call with a clear message and keeps the connection.

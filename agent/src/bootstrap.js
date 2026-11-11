@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
-import { quote } from "./ssh.js";
+import { quote, HOST_KEY_CHANGED } from "./ssh.js";
 import * as hostKeys from "./hostkeys.js";
 
 const JOB_TTL_MS = 24 * 3600 * 1000;
@@ -26,13 +26,13 @@ export function installScript(pub) {
   const k = quote(pub);
   return `umask 077
 D="$HOME/.ssh"; F="$D/authorized_keys"
-fail() { echo "ORRERY_FAIL $1: $(cat /tmp/orrery-err.$$ 2>/dev/null)"; rm -f /tmp/orrery-err.$$; exit 1; }
-mkdir -p "$D" 2>/tmp/orrery-err.$$ || fail "mkdir $D"
-touch "$F" 2>/tmp/orrery-err.$$ || fail "touch $F"
-grep -qxF ${k} "$F" 2>/dev/null || { ${endLine('"$F"')}; echo ${k} >> "$F"; } 2>/tmp/orrery-err.$$ || fail "append to $F"
-chmod 700 "$D" 2>/tmp/orrery-err.$$ && chmod 600 "$F" 2>>/tmp/orrery-err.$$ || fail "chmod"
+fail() { echo "ORRERY_FAIL $1: $E"; exit 1; }
+E=$(mkdir -p "$D" 2>&1) || fail "mkdir $D"
+E=$(touch "$F" 2>&1) || fail "touch $F"
+grep -qxF ${k} "$F" 2>/dev/null || E=$({ ${endLine('"$F"')}; echo ${k} >> "$F"; } 2>&1) || fail "append to $F"
+E=$(chmod 700 "$D" 2>&1 && chmod 600 "$F" 2>&1) || fail "chmod"
+E=""
 grep -qxF ${k} "$F" || fail "the key is not in $F after writing (immutable file? full disk?)"
-rm -f /tmp/orrery-err.$$
 echo ORRERY_OK`;
 }
 
@@ -122,7 +122,9 @@ export function createBootstrapper(deps) {
     try {
       const r = await deps.exec(withKey(server, username), "echo ORRERY_OK", { timeoutSec: 20 });
       return r.stdout.includes("ORRERY_OK");
-    } catch {
+    } catch (e) {
+      // A changed host key is not a login to fix: nothing is pushed to a machine that may be another one.
+      if (e.code === HOST_KEY_CHANGED) throw e;
       return false;
     }
   }
@@ -173,6 +175,7 @@ export function createBootstrapper(deps) {
       try {
         r = await deps.exec(withKey(server, user), installScript(pub), { timeoutSec: 30 });
       } catch (e) {
+        if (e.code === HOST_KEY_CHANGED) throw e;
         if (looksUnreachable(e)) throw new Error(`Cannot reach ${server.host}:22. Check that the security group lets in the Orrery host's IP (${e.message})`);
         step(`${user} cannot log in, trying the next user`);
         continue;
@@ -231,6 +234,7 @@ export function createBootstrapper(deps) {
       // checked against them, and once it worked they are the server's pinned keys. A brand-new instance has
       // none on record yet and is trusted on first use.
       const known = access.hostKeys || [];
+      if (!known.length && access.hostKeysListed) step("Lightsail's record of the host keys could not be read; trusting the key on first use");
       if (known.length) fs.writeFileSync(path.join(dir, "known_hosts"), known.map((k) => `${access.host} ${k}\n`).join(""), { mode: 0o600 });
       step(`Logging in as ${access.username}@${access.host} with the temporary login to install the key`);
       const out = await (deps.runSsh || runSsh)([
@@ -243,6 +247,7 @@ export function createBootstrapper(deps) {
         "-o", "ConnectTimeout=20",
         "-o", "LogLevel=ERROR", // no "Permanently added" / post-quantum notices hiding the real error
         "-n", // stdin from /dev/null, so ssh never waits on it
+        "--",
         `${access.username}@${access.host}`,
         installScript(pub),
       ]);

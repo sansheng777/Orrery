@@ -29,12 +29,18 @@ export function auditLine(entry, file = path.join(DATA_DIR, "audit.log")) {
   } catch (e) {
     console.error(`audit log not written: ${e.message}`);
   }
-  console.error(`[admin] ${entry.tool} ${entry.ok ? "ok" : "failed"} ${JSON.stringify(entry.args)}${entry.error ? " " + entry.error : ""}`);
+  // JSON keeps a newline in an argument or an error from starting a line that looks like another entry.
+  console.error(`[admin] ${entry.tool} ${entry.started ? "started" : entry.ok ? "ok" : "failed"} ${JSON.stringify(entry.args)}${entry.error ? " " + JSON.stringify(entry.error) : ""}`);
 }
+
+// These can stop Orrery itself (a reboot or "docker compose down" on its own host), and then the
+// line written when a call returns never comes: they are also logged when they start.
+const LOGGED_AT_START = new Set(["run_command", "container_action"]);
 
 export const audited = (name, fn, log = auditLine) => async (args) => {
   const started = Date.now();
   const base = { time: new Date(started).toISOString(), tool: name, args: redact(args ?? {}) };
+  if (LOGGED_AT_START.has(name)) log({ ...base, started: true });
   try {
     const result = await fn(args ?? {});
     log({ ...base, ok: true, ms: Date.now() - started });

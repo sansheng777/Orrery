@@ -160,6 +160,10 @@ for (const operation of ["GetConsoleOutput", "GetConsoleScreenshot"]) {
   assert.equal(hostKeyLine({ algorithm: "ssh-rsa", publicKey: b64 }), null, "another algorithm than the key says");
   assert.equal(hostKeyLine({ algorithm: "x509-cert", publicKey: "MIIC" }), null, "an RDP certificate");
   for (const bad of [{}, undefined, { algorithm: "ssh-ed25519" }, { algorithm: "ssh-ed25519", publicKey: "not a key" }]) assert.equal(hostKeyLine(bad), null);
+  // A name that would start a second known_hosts line is refused even when the key blob repeats it.
+  const evil = "ssh-ed25519\n* ssh-ed25519";
+  const evilKey = Buffer.concat([sshString(evil), sshString("k".repeat(32))]).toString("base64");
+  assert.equal(hostKeyLine({ algorithm: evil, publicKey: evilKey }), null);
 }
 
 // ---------- config ----------
