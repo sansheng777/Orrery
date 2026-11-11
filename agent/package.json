@@ -5,7 +5,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "test": "node test/parse.js && node ../providers/aws/test/parse.js && node ../providers/netcup/test/parse.js && node ../providers/netcup/test/admin.js && node ../providers/linode/test/parse.js && node ../providers/gcp/test/parse.js && node ../providers/aliyun/test/parse.js && node ../providers/vultr/test/parse.js && node ../providers/digitalocean/test/parse.js && node ../providers/kamatera/test/parse.js && node test/pool.js && node test/live.js && node test/providers.js && node test/onboarding.js && node test/smoke.js"
+    "test": "node test/parse.js && node test/overview.js && node ../providers/aws/test/parse.js && node ../providers/netcup/test/parse.js && node ../providers/netcup/test/admin.js && node ../providers/linode/test/parse.js && node ../providers/gcp/test/parse.js && node ../providers/aliyun/test/parse.js && node ../providers/vultr/test/parse.js && node ../providers/digitalocean/test/parse.js && node ../providers/kamatera/test/parse.js && node test/pool.js && node test/live.js && node test/providers.js && node test/onboarding.js && node test/smoke.js"
   },
   "license": "MIT",
   "dependencies": {

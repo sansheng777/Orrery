@@ -70,6 +70,11 @@ const s = await call("server_stats", { id: added.id });
 assert.ok(s.memory.total > 0, "memory total");
 assert.ok(s.cpu.percent >= 0 && s.cpu.percent <= 100, "cpu percent");
 console.log(`stats: ${s.hostname} | ${s.os} | cpu ${s.cpu.percent}% x${s.cpu.cores} | mem ${s.memory.percent}% | disk ${s.disk?.percent}% | docker ${s.docker.status} | ${s.latencyMs}ms`);
+// The overview shows the same server as one row of a Markdown table.
+const board = (await client.callTool({ name: "fleet_overview", arguments: {} })).content[0].text;
+assert.match(board, /1 server: 1 up\./);
+assert.ok(board.split("\n").some((l) => l.startsWith(`| smoke (${SMOKE_HOST}) | up | `)), "overview row");
+console.log(board.split("\n").filter((l) => l.startsWith("| smoke")).join("\n"));
 // The live sampler answers from memory once it has run for a couple of seconds.
 let pz = await call("server_pulse", { id: added.id });
 for (let i = 0; i < 8 && !pz.latest; i++) {

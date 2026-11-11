@@ -14,11 +14,25 @@ AI agents: start with [AGENTS.md](AGENTS.md). It has the deploy commands, client
 
 - **Discovery across 8 providers.** Every machine with a public IPv4 shows up in `list_servers` within a minute. Deleted machines drop out.
 - **One-call onboarding.** `ssh_bootstrap` makes a discovered server trust Orrery's key: automatic on AWS, Google Cloud and Alibaba Cloud, one pasted command elsewhere.
-- **Monitoring.** CPU, load, memory, swap, disks, network, Docker containers, pending updates and last login in one SSH round trip. `server_pulse` gives one sample a second.
+- **Monitoring.** CPU, load, memory, swap, disks, network, Docker containers, pending updates and last login in one SSH round trip. `server_pulse` gives one sample a second; `fleet_overview` gives a status board of every server in one call.
 - **Shell and Docker.** Run commands, read container logs, start, stop or restart containers.
 - **Cloud control.** Power, delete, rebuild or reinstall, plus a generic API tool per provider with a read-only `*_query` twin you can allow without a prompt.
 - **Guards.** The Orrery host and IPs you list cannot be stopped or deleted through the cloud tools. Irreversible actions must repeat the machine's name. Secret-returning APIs are refused and secrets in answers are redacted. SSH host keys are pinned, so a changed key stops the connection. Every change goes to an audit log. Details: [docs/security.md](docs/security.md).
 - **Usage rules built in.** At connect, Orrery sends each client its operating rules as MCP instructions (`agent/src/instructions.js`).
+
+## Built for Claude, open to every MCP client
+
+Orrery is developed and tested with Claude first, and speaks plain MCP, so any client that can add a remote MCP server with a header can use it, whatever model it runs.
+
+| | claude.ai and the Claude apps | Claude Code | Other MCP clients (Codex, Cursor, Gemini CLI, tools built on other models) |
+| --- | --- | --- | --- |
+| Every tool, with the same guards | Yes | Yes | Yes |
+| Operating rules sent at connect | Yes | Yes | If the client passes MCP instructions to its model |
+| Dashboard | Live page (a claude.ai Artifact): figures every second, terminal, container controls, cloud views | Status board as text: `fleet_overview` | Status board as text: `fleet_overview` |
+| Reaching Orrery | Allowed by the installer's firewall rule | Your IP allowed at install | Your IP allowed at install |
+| Setup guided by the assistant | Yes ([AGENTS.md](AGENTS.md)) | Yes | Yes: the steps are written for any model to follow |
+
+`fleet_overview` returns one Markdown table of every server (state, CPU, memory, disk, load, containers, uptime, what needs attention) in a single call, so even a small model can answer "how are my servers doing?" correctly.
 
 ## Supported providers
 

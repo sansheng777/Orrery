@@ -86,6 +86,7 @@ Kind: R read-only, W changes something without deleting data, D can delete data,
 | --- | --- | --- |
 | `list_servers` | R | Every server: saved, from `~/.ssh/config`, and discovered. Includes labels, hidden machines, `exec` and `discoveryErrors`. Never returns passwords |
 | `server_stats` | R | One SSH round trip: OS, kernel, CPU, load, memory, swap, disks, network totals, uptime, users, reboot required, pending updates, last login, login banner, Docker containers with CPU and memory, and the pinned SSH host key fingerprints (`hostKeys`) |
+| `fleet_overview` | R | A status board of every server as one Markdown table: state, CPU, memory, root disk, load, containers, uptime, and what needs attention (a disk or memory at 90% or more, load at twice the cores, containers not running, reboot required, login refused). All servers are asked at once with 20 seconds each; up to 50 are shown. Also offered as the MCP prompt `overview` |
 | `server_pulse` | R | Live figures, one sample a second. The first call starts a light sampler on the server; later calls answer from memory. It stops two minutes after the last call. `ids` up to 50 servers, `samples` up to 120 (default 10) |
 | `container_logs` | R | Last lines of a container's log (default 200, at most 2000) |
 | `run_command` | D | One shell command, no TTY. Timeout default 60 s, at most 300 s; output up to 512 KiB; command up to 8000 characters. Returns `output`, `exitCode`, `timedOut`, `truncated` and `cwd` (pass it back to continue there). A `cwd` that does not exist fails the call. A connection lost mid-command is an error |
@@ -178,6 +179,10 @@ Follow progress with `netcup_get_task` or `netcup_list_tasks`, `linode_query /ac
 - Stop and Restart are hidden for containers on the Orrery host.
 - The terminal refuses interactive programs and follow modes (`tail -f`, `journalctl -f`, `docker logs -f`, `kubectl logs -f`, `dmesg -w`) and adds `-c 4` to a `ping` without a count. Its stop button only stops the page from waiting; the command runs on until it ends or times out.
 - The page redraws every second, but leaves scrolling and copyable regions alone unless their content changes, and pauses while a pointer is pressed.
+
+### Other clients
+
+Outside claude.ai there is no page. `fleet_overview` is the dashboard there: one call, one Markdown table the assistant shows as it is. Clients that support MCP prompts offer it as the command `overview`.
 
 ## 7. Troubleshooting
 
@@ -274,6 +279,7 @@ The deployed container does not receive these. Use the files in `data/`.
 | `agent/src/index.js`, `http.js` | Entry point (stdio, or HTTP with `--http` or `PORT`); token check, body limit, one MCP server per request |
 | `agent/src/server.js`, `instructions.js` | Tools and MCP instructions per role |
 | `agent/src/ssh.js`, `hostkeys.js`, `live.js` | SSH pool, stats script, command execution; pinned host keys; live samplers behind `server_pulse` |
+| `agent/src/overview.js` | The board `fleet_overview` returns |
 | `agent/src/discovery.js`, `cloud.js` | Discovery, ids, labels, the `orrery-host` tag; provider loading and matching resources to servers by IP |
 | `agent/src/bootstrap.js`, `keys.js` | `ssh_bootstrap` jobs per provider; Orrery's SSH key |
 | `agent/src/inventory.js`, `audit.js` | `servers.json` and `~/.ssh/config`; audit log and redaction |

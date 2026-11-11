@@ -162,7 +162,7 @@ Details: [Discovery and onboarding](architecture.md#5-discovery-and-onboarding).
 
 ## 11. Publish the dashboard (optional)
 
-`dashboard/orrery.html` is a claude.ai Artifact and works only inside claude.ai and the Claude apps. In a conversation that has the `Orrery` connector, ask Claude to publish the file unchanged as an Artifact with the connector's tools; the list is in [AGENTS.md](../AGENTS.md#publish-the-dashboard-claudeai-only) and in the file's header comment. Allow the page to use the connector when it asks. To update it, publish the new file to the same Artifact.
+`dashboard/orrery.html` is a claude.ai Artifact and works only inside claude.ai and the Claude apps. In a conversation that has the `Orrery` connector, ask Claude to publish the file unchanged as an Artifact with the connector's tools; the list is in [AGENTS.md](../AGENTS.md#publish-the-dashboard-claudeai-only) and in the file's header comment. Allow the page to use the connector when it asks. In other clients there is no page: ask the assistant for an overview, and it shows the table `fleet_overview` returns. To update it, publish the new file to the same Artifact.
 
 ## Daily operations
 

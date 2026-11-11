@@ -12,7 +12,7 @@ Pick your case:
 | --- | --- |
 | The user wants Orrery set up, or `list_servers` is not among your tools | "Set up Orrery" below, step by step |
 | `list_servers` is among your tools | "Operate" |
-| The user wants a dashboard in claude.ai | "Publish the dashboard" |
+| The user wants a dashboard | In claude.ai: "Publish the dashboard". Anywhere else: call `fleet_overview` and show its table as it is |
 
 ### Set up Orrery: follow these steps in order
 
@@ -75,7 +75,7 @@ The exact setting for each client is in `docs/deploy.md`, step 6. These clients 
 
 **Step 6. The user sets the tool permissions.** Send this:
 
-> In the connector's settings, let the tools that only read run without asking: `list_servers`, `server_stats`, `server_pulse`, `cloud_providers`, `container_logs`, and every tool whose name ends in `_instances`, `_servers`, `_droplets` or `_query`. Keep every other tool on asking for your approval, so nothing changes without it.
+> In the connector's settings, let the tools that only read run without asking: `list_servers`, `fleet_overview`, `server_stats`, `server_pulse`, `cloud_providers`, `container_logs`, and every tool whose name ends in `_instances`, `_servers`, `_droplets` or `_query`. Keep every other tool on asking for your approval, so nothing changes without it.
 
 **Step 7. Check that it works.** The Orrery tools only show up in a new conversation, so send this:
 
@@ -114,7 +114,7 @@ About the installer: it installs Docker, adds 2 GB of swap if there is none, cre
 
 ### Publish the dashboard (claude.ai only)
 
-`dashboard/orrery.html` is a ready-made claude.ai Artifact.
+`dashboard/orrery.html` is a ready-made claude.ai Artifact. It works only in claude.ai and the Claude apps; in every other client the dashboard is the table `fleet_overview` returns.
 
 1. Check the name of the user's connector. The page looks for `Orrery`; for another name, change the `CANDIDATES` array near the top of the page's script. Make no other edit.
 2. Publish the file itself with the Artifact tool: from a checkout, or downloaded from `https://raw.githubusercontent.com/sansheng777/Orrery/main/dashboard/orrery.html`. Never retype or shorten it.
@@ -129,6 +129,7 @@ The page calls only the tools of configured providers. If the publish refuses a 
 The server sends these rules to every client as MCP instructions (`agent/src/instructions.js`):
 
 - Start with `list_servers`; its ids are what every other tool takes.
+- "How are my servers doing?": call `fleet_overview` once and show its table as it is.
 - Prefer read-only tools (`*_instances`, `*_query`, `server_stats`, `server_pulse`) for every read.
 - Ask the user before anything that stops, reboots, deletes, rebuilds, reinstalls, reverts, changes a firewall or network, or runs a command that changes something.
 - Never stop, reboot or change the network of the server tagged `orrery-host`, and never stop its containers: it runs Orrery. The cloud tools refuse it; `run_command` and `container_action` do not.

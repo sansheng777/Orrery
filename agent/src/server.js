@@ -5,6 +5,7 @@ import { addServer, updateServer, removeServer, DATA_DIR } from "./inventory.js"
 import { stats, runInDir, exec, quote, dropConnections } from "./ssh.js";
 import * as live from "./live.js";
 import * as hostKeys from "./hostkeys.js";
+import { buildOverview } from "./overview.js";
 import { registerProviders } from "./cloud.js";
 import { audited } from "./audit.js";
 import { createDiscovery } from "./discovery.js";
@@ -305,6 +306,30 @@ function registerSshTools(server, { allowExec, change, onboarding = false }) {
       annotations: READ,
     },
     tool(async ({ id }) => ({ ...(await probe(id, stats)), hostKeys: hostKeys.pinned(id) })),
+  );
+
+  server.registerTool(
+    "fleet_overview",
+    {
+      title: "Fleet overview",
+      description:
+        "A ready-made status board of every server, in one call: state, CPU, memory, disk, load, containers, uptime and what needs attention, as a Markdown table. Use it when the user asks how their servers are doing, and as the dashboard where you cannot publish claude.ai Artifacts. Show the table as it is.",
+      annotations: READ,
+    },
+    async () => {
+      try {
+        const { servers, errors } = await discovery.list();
+        return { content: [{ type: "text", text: await buildOverview({ servers, errors, probe: (s) => probe(s.id, stats) }) }] };
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+  // The same board as a prompt, which clients show as a command.
+  server.registerPrompt(
+    "overview",
+    { title: "Fleet overview", description: "The status of every server, as one table" },
+    () => ({ messages: [{ role: "user", content: { type: "text", text: "Call fleet_overview and show me its table as it is. Then say in a sentence or two what needs attention, if anything." } }] }),
   );
 
   server.registerTool(

@@ -50,6 +50,18 @@ assert.doesNotMatch(client.getInstructions(), /ssh_bootstrap, then/, "the read-o
 }
 let { tools } = await client.listTools();
 assert.deepEqual(tools.filter((t) => PROVIDER_TOOL.test(t.name)).map((t) => t.name), ["cloud_providers"]);
+// The fleet overview: a read-only tool that answers with a Markdown board, and the same as a prompt.
+// Asked here, with no credentials and no saved server, so nothing is contacted.
+{
+  assert.equal(tools.find((x) => x.name === "fleet_overview").annotations?.readOnlyHint, true);
+  const board = await client.callTool({ name: "fleet_overview", arguments: {} });
+  assert.ok(!board.isError);
+  assert.match(board.content[0].text, /^Orrery overview, \d{4}-\d\d-\d\d \d\d:\d\d UTC\. 0 servers/);
+  assert.ok(board.content[0].text.includes("| Server | State | CPU |"), "plain Markdown, not JSON");
+  const { prompts } = await client.listPrompts();
+  assert.deepEqual(prompts.map((p) => p.name), ["overview"]);
+  assert.match((await client.getPrompt({ name: "overview" })).messages[0].content.text, /fleet_overview/);
+}
 let res = await client.callTool({ name: "cloud_providers", arguments: {} });
 assert.deepEqual(res.structuredContent.providers.map((p) => [p.id, p.configured]), [["aws", false], ["netcup", false], ["linode", false], ["gcp", false], ["aliyun", false], ["vultr", false], ["digitalocean", false], ["kamatera", false]]);
 await client.close();
