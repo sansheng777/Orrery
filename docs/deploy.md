@@ -17,7 +17,7 @@ All commands run as root on the Orrery host.
 ```bash
 apt update && apt install -y git curl
 curl -fsSL https://get.docker.com | sh
-git clone https://github.com/sansheng777/orrery ~/orrery
+git clone https://github.com/sansheng777/Orrery ~/orrery
 cd ~/orrery/deploy
 mkdir -p data && chown 1000:1000 data && chmod 700 data
 ```

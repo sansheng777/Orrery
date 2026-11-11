@@ -21,7 +21,7 @@ if (!SMOKE_HOST || !SMOKE_USER) {
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "orrery-"));
 const entry = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "index.js");
 // No cloud credentials: discovery stays empty and the test never touches a real account.
-const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(AWS_|NETCUP_|LINODE_)/.test(k)));
+const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(AWS_|NETCUP_|LINODE_|GCP_|VULTR_|DIGITALOCEAN_|KAMATERA_)/.test(k)));
 Object.assign(env, { ORRERY_DIR: dataDir, ORRERY_SSH_CONFIG: path.join(dataDir, "none") });
 let transport;
 let child;

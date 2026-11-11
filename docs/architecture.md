@@ -39,7 +39,7 @@ At connect, the server sends every client the usage rules in `agent/src/instruct
 ### Running locally
 
 ```bash
-git clone https://github.com/sansheng777/orrery && cd orrery
+git clone https://github.com/sansheng777/Orrery orrery && cd orrery
 npm install
 node agent/src/index.js            # stdio, role hub
 ```
@@ -287,7 +287,18 @@ The root `package.json` defines npm workspaces. Only `aws` has dependencies (AWS
 
 ### Adding a provider
 
-A module exports `id`, `name`, `loadConfig(env, dataDir)` and `register(server, ctx)`, which returns `{ id, name, configured, tools }`. Register listings for every role and control tools only when `ctx.admin` is true, wrapped in `ctx.adminTool` so they are audited. For discovery and onboarding, add it to `PROVIDERS` in `agent/src/cloud.js`, to the sources and id pattern in `agent/src/discovery.js`, and to `bootstrap.js`. Add its `COPY` lines to `agent/Dockerfile` and its test to the `test` script in `agent/package.json`. Follow the rules in [AGENTS.md](../AGENTS.md).
+Start from `providers/vultr/` or `providers/digitalocean/`, the simplest modules; `grep -ri vultr .` lists every place a provider appears. A module exports `id`, `name`, `loadConfig(env, dataDir)` and `register(server, ctx)`, which returns `{ id, name, configured, tools }`. Register listings for every role and control tools only when `ctx.admin` is true, wrapped in `ctx.adminTool` so they are audited. Follow the rules in [AGENTS.md](../AGENTS.md).
+
+| Where | What |
+| --- | --- |
+| `providers/<name>/` | `index.js`, `package.json`, `test/`. Run `npm install` at the root afterwards: the image installs from `package-lock.json` |
+| `agent/src/cloud.js`, `discovery.js` | `PROVIDERS`; the sources and the id pattern |
+| `agent/src/server.js` | The id pattern and provider names of `ignore_server`; the bootstrapper's dependencies when onboarding is automatic |
+| `agent/src/bootstrap.js`, `instructions.js` | The onboarding path (automatic, or a command to paste); the sentence that says which providers are automatic |
+| `agent/Dockerfile` | Its two `COPY` lines |
+| Tests | Its test in the `test` script of `agent/package.json`; the provider and tool lists in `agent/test/providers.js`; an onboarding case in `agent/test/onboarding.js` |
+| `dashboard/orrery.html` | `PROVIDERS`, `CLOUD_POLL`, the vendor tables and the provider's view; its listing tool in the three dashboard tool lists |
+| Docs | The provider tables in `README.md`, [providers.md](providers.md), [security.md](security.md) and this file |
 
 ## 12. Tests and releases
 
@@ -303,6 +314,6 @@ The SSH smoke test runs against a real machine when `SMOKE_HOST` and `SMOKE_USER
 cd agent && SMOKE_HOST=203.0.113.30 SMOKE_USER=root SMOKE_KEY=~/.ssh/id_ed25519 npm test
 ```
 
-Add `SMOKE_TRANSPORT=http` to go through the HTTP endpoint, `ORRERY_ALLOW_EXEC=0` for the read-only tool set, or `ORRERY_ROLE=admin` for the deployed role. `SMOKE_PORT` defaults to 22. The smoke test uses a fresh data directory and drops `AWS_*`, `NETCUP_*` and `LINODE_*` variables; unset `VULTR_API_KEY`, `DIGITALOCEAN_TOKEN` and the Kamatera variables yourself. Over HTTP it also checks that a wrong token gets 404 and that the token never appears in the log.
+Add `SMOKE_TRANSPORT=http` to go through the HTTP endpoint, `ORRERY_ALLOW_EXEC=0` for the read-only tool set, or `ORRERY_ROLE=admin` for the deployed role. `SMOKE_PORT` defaults to 22. The smoke test uses a fresh data directory and drops every provider variable, so it never touches a real account. Over HTTP it also checks that a wrong token gets 404 and that the token never appears in the log.
 
-Pushing a tag `v1.2.3` runs the tests and publishes `ghcr.io/<owner>/orrery:1.2.3` and `:latest`. Pre-release tags such as `v1.2.3-rc.1` do not move `:latest`.
+Pushing a tag `v1.2.3` runs the tests and publishes `ghcr.io/<owner>/orrery:1.2.3` and `:latest`. The compose file does not use that image: it builds from the checkout. Pre-release tags such as `v1.2.3-rc.1` do not move `:latest`.

@@ -6,6 +6,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
@@ -35,8 +36,17 @@ assert.doesNotMatch(client.getInstructions(), /ssh_bootstrap, then/, "the read-o
   assert.match(admin.getInstructions() || "", /orrery-host/);
   assert.match(admin.getInstructions(), /dashboard\/orrery\.html/);
   await admin.close();
-  const { instructionsFor } = await import("../src/instructions.js");
+  const { instructionsFor, DASHBOARD_TOOLS } = await import("../src/instructions.js");
   assert.equal(instructionsFor("admin", { ORRERY_INSTRUCTIONS: "off" }), undefined);
+
+  // The dashboard's tool list is written in three places; they must say the same.
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const listIn = (file, from, to) => {
+    const text = fs.readFileSync(path.join(root, file), "utf8");
+    return text.slice(text.indexOf(from), text.indexOf(to, text.indexOf(from))).match(/\b[a-z]+_[a-z_]+\b/g);
+  };
+  assert.deepEqual(listIn("AGENTS.md", "`list_servers,", "\n"), DASHBOARD_TOOLS, "AGENTS.md");
+  assert.deepEqual(listIn("dashboard/orrery.html", "list_servers,", "To use another connector name"), DASHBOARD_TOOLS, "dashboard header");
 }
 let { tools } = await client.listTools();
 assert.deepEqual(tools.filter((t) => PROVIDER_TOOL.test(t.name)).map((t) => t.name), ["cloud_providers"]);
