@@ -1,0 +1,9 @@
+# The agent image is built from the repository root. Send only what it needs; above all, never the
+# credentials in deploy/data and the .env file.
+*
+!package.json
+!package-lock.json
+!agent/package.json
+!agent/src/
+!providers/*/package.json
+!providers/*/*.js

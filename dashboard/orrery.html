@@ -1,0 +1,2164 @@
+<title>Orrery</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: sticky fleet bar on top with a Hosts / Clouds switch; the host view has the list on the left and one host's detail on the right (the console keeps the look of a real SSH session); the cloud view stacks one section per provider. */
+:root {
+  --bg: #eef1f5;
+  --panel: #ffffff;
+  --sunk: #f5f7fa;
+  --ink: #141a22;
+  --muted: #5b6675;
+  --line: #d9dfe7;
+  --accent: #2f5bd3;
+  --net-rx: #2f5bd3; /* download line */
+  --net-tx: #c2410c; /* upload line */
+  --accent-soft: #e3eafc;
+  --accent-ink: #ffffff;
+  --ok: #1d8a57;
+  --warn: #b26b00;
+  --crit: #c53b3b;
+  --ok-soft: #e1f3ea;
+  --warn-soft: #fbefd9;
+  --crit-soft: #fbe3e3;
+  /* The Orrery host: its own colour, so it never reads as a warning or as the selection. */
+  --core: #6a3fc4;
+  --core-soft: #f1ebfc;
+  --core-ink: #ffffff;
+  /* The console is always dark, like the terminal it stands in for. */
+  --term-bg: #15172b;
+  --term-fg: #8fe0a8;
+  --term-dim: #7f8aa8;
+  --term-prompt: #3fd47a;
+  --term-path: #6aa8ff;
+  --term-ip: #f0679b;
+  --term-err: #ff8f86;
+  --term-cursor: #2fd27a;
+  --term-bar: #1c1f37;
+  --term-edge: #2a2e4d;
+  --term-dot-1: #ff5f57;
+  --term-dot-2: #febc2e;
+  --term-dot-3: #28c840;
+  --font-display: "IBM Plex Sans Condensed", "PingFang SC", "Noto Sans SC", "Arial Narrow", sans-serif;
+  --font-body: "IBM Plex Sans", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1117; --panel: #161a22; --sunk: #11151c; --ink: #e6eaf0; --muted: #96a1b2; --line: #272e3a;
+    --accent: #7c9dff; --accent-soft: #1f2a48; --accent-ink: #0b0f1a; --net-rx: #7c9dff; --net-tx: #f59e5b;
+    --ok: #3fcf8e; --warn: #e5a94c; --crit: #ff6f6f; --ok-soft: #15322a; --warn-soft: #3a2c14; --crit-soft: #3d1b1e;
+    --core: #b598ff; --core-soft: #261d3d; --core-ink: #140d26;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1117; --panel: #161a22; --sunk: #11151c; --ink: #e6eaf0; --muted: #96a1b2; --line: #272e3a;
+  --accent: #7c9dff; --accent-soft: #1f2a48; --accent-ink: #0b0f1a; --net-rx: #7c9dff; --net-tx: #f59e5b;
+  --ok: #3fcf8e; --warn: #e5a94c; --crit: #ff6f6f; --ok-soft: #15322a; --warn-soft: #3a2c14; --crit-soft: #3d1b1e;
+  --core: #b598ff; --core-soft: #261d3d; --core-ink: #140d26;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.5 var(--font-body); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--panel); }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.num { font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--font-mono); }
+.muted { color: var(--muted); }
+
+/* Fleet bar */
+.bar {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 10px;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+}
+.brand { display: flex; align-items: center; gap: 10px; font: 600 18px/1 var(--font-display); letter-spacing: .01em; }
+.brand svg { flex: none; }
+.fleet { display: flex; gap: 8px; flex-wrap: wrap; margin-right: auto; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--sunk); border: 1px solid var(--line); font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.chip b { color: var(--ink); font-weight: 600; }
+.chip.warn { background: var(--warn-soft); border-color: transparent; color: var(--warn); }
+.chip.crit { background: var(--crit-soft); border-color: transparent; color: var(--crit); }
+.chip.ok { background: var(--ok-soft); border-color: transparent; color: var(--ok); }
+.btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 12px; font-weight: 500; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.danger { color: var(--crit); }
+.btn.danger.armed { background: var(--crit); border-color: var(--crit); color: var(--panel); }
+.btn.sm { padding: 3px 9px; font-size: 12.5px; border-radius: 6px; }
+.btn[disabled] { opacity: .55; cursor: default; }
+.views { display: flex; gap: 2px; padding: 2px; background: var(--sunk); border: 1px solid var(--line); border-radius: 8px; }
+.view { border: 0; background: none; padding: 4px 12px; border-radius: 6px; color: var(--muted); font-weight: 500; white-space: nowrap; }
+.view[aria-selected="true"] { background: var(--panel); color: var(--ink); box-shadow: 0 0 0 1px var(--line); }
+button.chip { cursor: pointer; }
+button.chip:hover { border-color: var(--accent); }
+
+/* Shell */
+.shell {
+  display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px 32px; max-width: 1440px; margin: 0 auto;
+}
+@media (max-width: 820px) { .shell { grid-template-columns: minmax(0, 1fr); } }
+
+/* Host list */
+.hosts { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.hosts-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.label { font: 600 11.5px/1 var(--font-body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.host-list { display: flex; flex-direction: column; gap: 14px; }
+/* One group per vendor (netcup, AWS, Linode, then hosts added by hand): a small heading over its cards. */
+.host-group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 0 2px; }
+.group-head .label { color: var(--ink); text-transform: none; letter-spacing: .02em; font-size: 12.5px; } /* vendor names keep their own spelling: netcup, AWS, Linode */
+.group-head .muted { font-size: 12px; }
+.group-head .bad { color: var(--crit); }
+.group-cards { display: flex; flex-direction: column; gap: 6px; }
+@media (max-width: 820px) {
+  .host-list { flex-direction: row; overflow-x: auto; padding-bottom: 4px; gap: 16px; }
+  .host-group { flex: none; }
+  .group-cards { flex-direction: row; }
+  .host { min-width: 230px; }
+}
+.host {
+  text-align: left; width: 100%; display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 4px 10px; align-items: center;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px;
+}
+.host:hover { border-color: var(--accent); }
+.host[aria-current="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.crit { background: var(--crit); }
+.dot.pending { background: transparent; border: 2px solid var(--muted); }
+.host-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.host-addr { grid-column: 2; font: 12px var(--font-mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.host-mini { grid-column: 2; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 4px; }
+.mini { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.mini .track { height: 4px; }
+.tagline { grid-column: 2; display: flex; gap: 4px; flex-wrap: wrap; }
+.tag { font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--sunk); color: var(--muted); border: 1px solid var(--line); }
+.tag.example { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.tag.role { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; }
+.host.self { border: 2px solid var(--core); background: var(--core-soft); padding: 9px 11px; }
+.host.self[aria-current="true"] { box-shadow: inset 0 0 0 1px var(--core); }
+.host-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.core-badge { flex: none; display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; background: var(--core); color: var(--core-ink); font-size: 11.5px; font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
+.core-note { margin: 10px 0 0; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--core); background: var(--core-soft); font-size: 13px; max-width: 72ch; }
+.orig { font: 12px var(--font-mono); color: var(--muted); }
+
+/* Detail */
+.detail { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+.head { padding: 16px 18px; display: flex; gap: 12px 20px; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; }
+.head h1 { margin: 0; font: 600 24px/1.15 var(--font-display); text-wrap: balance; overflow-wrap: anywhere; }
+.head .sub { font: 13px var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+.head-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.facts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); padding: 0 10px; overflow-x: auto; overflow-y: hidden; }
+.tab { border: 0; background: none; padding: 10px 12px; color: var(--muted); font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.tab .count { font-size: 11.5px; padding: 0 6px; border-radius: 999px; background: var(--sunk); margin-left: 4px; }
+.pane { padding: 16px 18px; }
+
+.notice { padding: 12px 14px; border-radius: 8px; background: var(--sunk); border: 1px solid var(--line); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.notice.crit { background: var(--crit-soft); border-color: transparent; color: var(--crit); }
+.notice.warn { background: var(--warn-soft); border-color: transparent; color: var(--warn); }
+.notice p { margin: 0; flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
+
+/* Meters */
+.meters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1100px) { .meters { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 340px) { .meters { grid-template-columns: minmax(0, 1fr); } }
+.meter { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.meter .big { font: 600 26px/1 var(--font-display); }
+.meter .big small { font-size: 14px; color: var(--muted); font-weight: 500; margin-left: 2px; }
+.meter .foot { font-size: 12px; color: var(--muted); }
+.track { display: block; height: 6px; border-radius: 3px; background: var(--sunk); border: 1px solid var(--line); overflow: hidden; }
+.fill { display: block; height: 100%; background: var(--ok); }
+.fill.warn { background: var(--warn); } .fill.crit { background: var(--crit); }
+.spark { width: 100%; height: 34px; display: block; }
+/* Live: the server on screen is read every 3 s (server_pulse); its CPU and memory charts show the last 5 minutes. */
+.live-badge { display: inline-flex; align-items: center; gap: 5px; color: var(--ok); font-weight: 600; font-size: 12px; }
+.live-badge i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+@media (prefers-reduced-motion: no-preference) { .live-badge i { animation: live-blink 1.6s ease-in-out infinite; } }
+@keyframes live-blink { 50% { opacity: .3; } }
+.netcard { margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 6px 18px; align-items: center; }
+.netcard .rates { display: flex; flex-direction: column; gap: 6px; }
+.netcard .rate { display: flex; align-items: baseline; gap: 8px; font: 600 20px/1 var(--font-display); }
+.netcard .rate small { font: 500 12px var(--font-body); color: var(--muted); }
+.netcard .rate i { width: 10px; height: 3px; border-radius: 2px; flex: none; align-self: center; }
+.netcard .foot { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.netcard .netspark { width: 100%; height: 56px; display: block; }
+@media (max-width: 640px) { .netcard { grid-template-columns: minmax(0, 1fr); } }
+.meter .label .live-badge, .netcard .label .live-badge { margin-left: 6px; letter-spacing: 0; text-transform: none; font-size: 11px; }
+
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+.kv { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+.kv h3 { margin: 0 0 8px; }
+.kv dl { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+td.r, th.r { text-align: right; white-space: nowrap; }
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 500; white-space: nowrap; background: var(--sunk); color: var(--muted); }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.crit { background: var(--crit-soft); color: var(--crit); }
+.cname { font-weight: 600; }
+.cimg { font: 12px var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+.row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.logs { margin-top: 12px; }
+.logs pre { margin: 0; max-height: 360px; overflow: auto; background: var(--term-bg); color: var(--term-fg); padding: 12px 14px; border-radius: 8px; font: 12px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Console: a window with a title bar; output and the prompt flow together like a real terminal, and the
+   body scrolls as one, so the prompt sits right under the last line instead of at the bottom edge. */
+.term {
+  background: var(--term-bg); color: var(--term-fg); border: 1px solid var(--term-edge); border-radius: 12px;
+  height: clamp(360px, 64vh, 780px); display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 1px 2px rgb(0 0 0 / .1), 0 12px 32px -18px rgb(0 0 0 / .45);
+}
+.term-bar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 8px 10px 8px 14px; background: var(--term-bar); border-bottom: 1px solid var(--term-edge); }
+.term-dots { display: flex; gap: 7px; }
+.term-dots i { width: 11px; height: 11px; border-radius: 50%; background: var(--term-dot-1); }
+.term-dots i:nth-child(2) { background: var(--term-dot-2); }
+.term-dots i:nth-child(3) { background: var(--term-dot-3); }
+.term-title { font: 600 12.5px/1.4 var(--font-body); color: var(--term-fg); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.term-title span { font-weight: 400; color: var(--term-dim); }
+.term-bar button { background: transparent; color: var(--term-dim); border: 1px solid var(--term-edge); border-radius: 6px; padding: 2px 10px; font: 12px/1.5 var(--font-body); cursor: pointer; }
+.term-bar button:hover { color: var(--term-fg); border-color: var(--term-dim); }
+.term-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 14px 16px 16px; font: 13.5px/1.6 var(--font-mono); cursor: text; }
+.term-out { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* One block per command: the command line with its result (exit status, time, copy), then its output.
+   A failed command is marked by a red rule on the left. */
+.blk { margin: 0 0 12px -12px; padding-left: 10px; border-left: 2px solid transparent; }
+.blk.fail { border-left-color: var(--term-err); }
+.blk-head { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 12px; }
+.blk-cmd { flex: 1 1 auto; min-width: 0; }
+/* Right of the command when it fits, on its own line under a long one (phones). */
+.blk-meta { flex: none; margin-left: auto; display: inline-flex; align-items: baseline; gap: 8px; font: 11.5px/1 var(--font-mono); color: var(--term-dim); }
+.blk-meta .ok { color: var(--term-prompt); }
+.blk-meta .bad { color: var(--term-err); }
+.blk-copy { background: transparent; color: var(--term-dim); border: 1px solid var(--term-edge); border-radius: 5px; padding: 1px 7px; font: 11px/1.4 var(--font-body); cursor: pointer; opacity: 0; transition: opacity .15s; }
+.blk:hover .blk-copy, .blk-copy:focus-visible { opacity: 1; }
+.blk-copy:hover { color: var(--term-fg); }
+@media (hover: none) { .blk-copy { opacity: 1; } }
+.blk-stop { background: transparent; color: var(--term-err); border: 1px solid var(--term-edge); border-radius: 5px; padding: 1px 7px; font: 11px/1.4 var(--font-body); cursor: pointer; }
+.blk-stop:hover { border-color: var(--term-err); }
+.blk-out { margin-top: 2px; }
+@media (prefers-reduced-motion: no-preference) { .blk-meta .run { animation: term-wait 1.2s ease-in-out infinite; } }
+@keyframes term-wait { 50% { opacity: .35; } }
+/* Status line under the window, like tmux or iTerm: link state, address, directory, latency, keys. */
+.term-status { display: flex; align-items: center; gap: 16px; padding: 6px 14px; background: var(--term-bar); border-top: 1px solid var(--term-edge); font: 11.5px/1.4 var(--font-mono); color: var(--term-dim); white-space: nowrap; overflow: hidden; }
+.term-status > span { overflow: hidden; text-overflow: ellipsis; }
+.st-conn { display: inline-flex; align-items: center; gap: 6px; color: var(--term-fg); }
+.st-conn i { width: 7px; height: 7px; border-radius: 50%; background: var(--term-dim); }
+.st-conn.ok i { background: var(--term-prompt); box-shadow: 0 0 0 3px rgb(63 212 122 / .15); }
+.st-conn.bad i { background: var(--term-err); }
+.st-cwd { color: var(--term-path); }
+.st-keys { margin-left: auto; }
+@media (max-width: 640px) { .st-keys, .st-lat { display: none; } }
+.term-out .p { color: var(--term-prompt); font-weight: 600; }
+.term-out .path { color: var(--term-path); font-weight: 600; }
+.term-out .ip { color: var(--term-ip); }
+.term-out .dim { color: var(--term-dim); }
+.term-out .err { color: var(--term-err); }
+.term-in { display: flex; align-items: baseline; gap: 0; }
+.term-in.busy { display: none; }
+.term-in .prompt { white-space: nowrap; }
+.term-in input { flex: 1; min-width: 40px; background: transparent; border: 0; outline: 0; color: var(--term-fg); font: inherit; padding: 0 0 0 1ch; caret-color: var(--term-cursor); caret-shape: block; }
+.term-tools { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; font-size: 12.5px; }
+
+/* Add / edit form */
+.sheet { position: fixed; inset: 0; z-index: 20; background: rgba(10, 14, 22, .45); display: flex; justify-content: flex-end; }
+.sheet form {
+  background: var(--panel); width: min(440px, 100%); height: 100%; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
+  padding-block: calc(20px + env(safe-area-inset-top, 0px)) calc(20px + env(safe-area-inset-bottom, 0px));
+  padding-left: 22px; padding-right: max(22px, env(safe-area-inset-right, 0px));
+  border-left: 1px solid var(--line);
+}
+.sheet h2 { margin: 0; font: 600 20px/1.2 var(--font-display); }
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field label { font-weight: 500; font-size: 13px; }
+.field input { border: 1px solid var(--line); background: var(--sunk); border-radius: 7px; padding: 8px 10px; width: 100%; }
+.field .hint { font-size: 12px; color: var(--muted); }
+.row2 { display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: 10px; }
+.form-actions { display: flex; gap: 8px; justify-content: space-between; margin-top: auto; flex-wrap: wrap; }
+
+/* Setup */
+.setup ol { margin: 8px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; max-width: 72ch; }
+.setup pre { margin: 6px 0 0; background: var(--sunk); border: 1px solid var(--line); border-radius: 7px; padding: 10px 12px; overflow-x: auto; font: 12.5px/1.5 var(--font-mono); }
+.setup h2 { margin: 0; font: 600 19px/1.2 var(--font-display); }
+.setup code { font: 12.5px var(--font-mono); background: var(--sunk); padding: 1px 5px; border-radius: 4px; }
+
+/* Cloud view: one section per provider; a failed or unconfigured provider greys out only its own section. */
+.cloud {
+  display: flex; flex-direction: column; gap: 14px; max-width: 1440px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px 32px;
+}
+.section-head { padding: 14px 18px; display: flex; gap: 10px 16px; flex-wrap: wrap; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+.section-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.section-title h2 { margin: 0; font: 600 19px/1.2 var(--font-display); }
+.section-title .sub { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.mark { flex: none; width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; font: 600 10.5px/1 var(--font-mono); letter-spacing: .02em; background: var(--accent-soft); color: var(--accent); }
+.section-body { padding: 14px 18px 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.section.off .mark { background: var(--sunk); color: var(--muted); }
+.section.off .section-title h2 { color: var(--muted); }
+.stale { opacity: .5; filter: grayscale(1); }
+.block-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.link { border: 0; background: none; padding: 0; color: var(--accent); font-weight: 500; text-decoration: underline; text-underline-offset: 2px; text-align: left; }
+.cost { display: grid; grid-template-columns: minmax(150px, max-content) minmax(0, 1fr); gap: 12px 24px; align-items: start; }
+@media (max-width: 640px) { .cost { grid-template-columns: minmax(0, 1fr); } }
+.cost .big { font: 600 26px/1 var(--font-display); }
+.cost .big small { font-size: 14px; color: var(--muted); font-weight: 500; margin-left: 4px; }
+.bars { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.bar-row { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 4px 10px; font-size: 12.5px; align-items: center; }
+.bar-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-row .track { grid-column: 1 / -1; height: 5px; }
+.bar-row .fill { background: var(--accent); }
+.section table { min-width: 680px; }
+.section td .mono, .section td.mono, .section .cname, .section .cimg { white-space: nowrap; }
+/* An address that copies itself on click (the page redraws live figures every second, which would drop a text selection). */
+.copy { border: 0; background: none; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: copy; border-radius: 3px; }
+.copy:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
+.copy.done { background: var(--ok-soft); color: var(--ok); }
+.empty { padding: 28px 18px; text-align: center; color: var(--muted); }
+.toast { position: fixed; z-index: 30; left: 50%; transform: translateX(-50%); bottom: calc(18px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--panel); padding: 8px 14px; border-radius: 8px; font-size: 13px; max-width: calc(100% - 32px); }
+@media (prefers-reduced-motion: no-preference) { .fill { transition: width .4s ease; } }
+</style>
+
+<header class="bar">
+  <div class="brand">
+    <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="2" width="20" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="1" y="13" width="20" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="5" cy="5.5" r="1.3" fill="currentColor"/><circle cx="5" cy="16.5" r="1.3" fill="currentColor"/></svg>
+    Orrery
+  </div>
+  <div class="views" role="tablist" aria-label="View">
+    <button class="view" role="tab" type="button" data-view="hosts" aria-selected="true">Hosts</button>
+    <button class="view" role="tab" type="button" data-view="cloud" aria-selected="false">Clouds</button>
+  </div>
+  <div class="fleet" id="fleet"></div>
+  <button class="btn primary" id="addBtn" type="button">+ Add server</button>
+</header>
+
+<main class="shell">
+  <aside class="hosts">
+    <div class="hosts-head"><span class="label">Hosts</span><span class="muted num" id="hostCount"></span></div>
+    <div class="host-list" id="hostList"></div>
+  </aside>
+  <section class="detail" id="detail"></section>
+</main>
+<main class="cloud" id="cloud" hidden></main>
+
+<div class="sheet" id="sheet" hidden>
+  <form id="serverForm" autocomplete="off">
+    <h2 id="formTitle">Add server</h2>
+    <div class="field"><label for="f-name">Name</label><input id="f-name" required maxlength="64" placeholder="aws-tokyo-web"></div>
+    <div class="row2">
+      <div class="field"><label for="f-host">Host / IP</label><input id="f-host" required placeholder="203.0.113.10 or example.com"></div>
+      <div class="field"><label for="f-port">Port</label><input id="f-port" type="number" min="1" max="65535" value="22"></div>
+    </div>
+    <div class="field"><label for="f-user">Username</label><input id="f-user" required placeholder="ubuntu"></div>
+    <div class="field"><label for="f-key">Private key path</label><input id="f-key" placeholder="~/.ssh/aws-tokyo.pem"><span class="hint">If empty, tries ~/.ssh/id_ed25519, id_ecdsa, id_rsa and ssh-agent in turn.</span></div>
+    <div class="field"><label for="f-pass">Password (optional)</label><input id="f-pass" type="password" placeholder="Leave empty for key-only login"><span class="hint">Stored only on the machine that runs the agent (servers.json, mode 600), never in this page. The key path is a path on that machine too; with the Docker deployment, use /data/keys/&lt;file&gt;.</span></div>
+    <div class="field"><label for="f-tags">Tags</label><input id="f-tags" placeholder="prod, tokyo"><span class="hint">Separate with commas.</span></div>
+    <p class="muted" id="formError" hidden></p>
+    <div class="form-actions">
+      <button class="btn" type="button" id="formCancel">Cancel</button>
+      <span style="display:flex;gap:8px">
+        <button class="btn danger" type="button" id="formDelete" hidden>Delete</button>
+        <button class="btn primary" type="submit" id="formSubmit">Save</button>
+      </span>
+    </div>
+  </form>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script>
+(() => {
+  // The cloud connector (works in the browser and phone apps) first, then the desktop app's local agent.
+  // These are the connector names the page looks for: if you named your connector something else in
+  // claude.ai (or the local MCP server something other than "orrery"), change them to match.
+  const CANDIDATES = ["Orrery", "host:orrery"];
+  const MISSING = new Set(["server_not_connected", "server_not_found", "selection_required"]);
+  let SERVER = CANDIDATES[0];
+  const POLL_MS = 30000;
+  const PULSE_MS = 1000; // server_pulse for every server: the agent samples each one once a second
+  const LIVE_POINTS = 300; // 5 minutes of samples
+  const LIST_POLL_MS = 30000; // re-read list_servers so machines deleted or created elsewhere show up
+  const HISTORY = 60;
+  const AUTHZ = new Set(["needs_reauth", "server_not_connected", "blocked_by_policy", "approval_required", "not_in_manifest"]);
+  const INTERACTIVE = /^(sudo\s+)?(vim?|nano|emacs|top|htop|btop|less|more|man|watch|ssh|mysql|psql|redis-cli|python3?|node|irb|tmux|screen)(\s|$)/;
+  // Commands that never end on their own. The page cannot stream their output or send Ctrl+C, so a plain
+  // ping gets a count, and follow modes are turned away with the form that ends.
+  const FOLLOW = [
+    /\btail\b[^;&|]*\s-[a-zA-Z]*[fF][a-zA-Z]*(?=\s|$)/,
+    /\bjournalctl\b[^;&|]*\s(-[a-zA-Z]*f[a-zA-Z]*|--follow)(?=\s|$)/,
+    /\b(docker|kubectl)\b[^;&|]*\blogs\b[^;&|]*\s(-[a-zA-Z]*f[a-zA-Z]*|--follow)(?=\s|$)/,
+    /\bdmesg\b[^;&|]*\s(-w|--follow)(?=\s|$)/,
+  ];
+  function tame(command) {
+    const c = command.trim();
+    if (/^(sudo\s+)?ping6?\s/.test(c) && !/\s-[a-zA-Z]*[cw]\s*\d|\s--(count|deadline)/.test(c)) {
+      const run = c.replace(/^((?:sudo\s+)?ping6?)\s+/, "$1 -c 4 ");
+      return { run, note: `Ran ${run} instead: a ping without a count never ends.` };
+    }
+    if (FOLLOW.some((re) => re.test(c))) return { refuse: "This command keeps following new output, so the web terminal would never see it end. Drop -f / --follow and try again, e.g. tail -n 100 <file>, journalctl -n 100 --no-pager or docker logs --tail 100 <container>." };
+    return { run: c };
+  }
+
+  const $ = (id) => document.getElementById(id);
+  // An address shown as a button that copies it; empty values show a dash (or nothing).
+  const copyable = (v, dash = "–") => (v ? `<button class="copy" type="button" data-copy-text="${esc(v)}" title="Click to copy">${esc(v)}</button>` : dash);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  const state = {
+    mode: "loading", // loading | live | setup | demo
+    setupReason: "",
+    mcp: null,
+    servers: [],
+    exec: true, // false when the agent runs read-only (ORRERY_ALLOW_EXEC=0)
+    stats: {}, // id -> { data, error, history: {cpu:[], mem:[]}, needsApproval }
+    selected: null,
+    tab: "overview",
+    term: {}, // id -> { html: [], cwd, history: [], hIdx, busy }
+    logs: null, // { container, text }
+    armed: null, // key of an action awaiting its second click
+    editing: null,
+    view: "hosts", // hosts | cloud
+    cloud: { status: "idle", error: null, providers: [], slots: {} },
+  };
+  const watches = new Map();
+  const cloudWatches = new Map();
+
+  // Read-only provider views served by the same agent. Each provider shows only when the agent has its credentials.
+  // Same order as the host groups (VENDOR_ORDER).
+  const PROVIDERS = [
+    { id: "netcup", name: "netcup", mark: "NC", main: "netcup_servers", readme: "docs/providers.md" },
+    { id: "aws", name: "AWS", mark: "AWS", main: "aws_instances", readme: "docs/providers.md" },
+    { id: "gcp", name: "Google Cloud", mark: "GC", main: "gcp_instances", readme: "docs/providers.md" },
+    { id: "linode", name: "Linode", mark: "LI", main: "linode_instances", readme: "docs/providers.md" },
+    { id: "vultr", name: "Vultr", mark: "VU", main: "vultr_instances", readme: "docs/providers.md" },
+    { id: "digitalocean", name: "DigitalOcean", mark: "DO", main: "digitalocean_droplets", readme: "docs/providers.md" },
+    { id: "kamatera", name: "Kamatera", mark: "KA", main: "kamatera_servers", readme: "docs/providers.md" },
+    { id: "aliyun", name: "Alibaba Cloud", mark: "ALI", main: "aliyun_instances", readme: "docs/providers.md" },
+  ];
+  const CLOUD_POLL = { aws_instances: 60000, netcup_servers: 60000, linode_instances: 60000, gcp_instances: 60000, vultr_instances: 60000, digitalocean_droplets: 60000, kamatera_servers: 60000, aliyun_instances: 60000, aws_cost: 6 * 3600000 };
+  // Tools read rarely and kept for days (bills).
+  const LONG_POLL = new Set(["aws_cost"]);
+  const LINODE_STATE = { running: ["Running", "ok"], offline: ["Off", ""], stopped: ["Off", ""], booting: ["Starting", "warn"], rebooting: ["Rebooting", "warn"], shutting_down: ["Shutting down", "warn"], provisioning: ["Creating", "warn"], rebuilding: ["Rebuilding", "warn"], resizing: ["Resizing", "warn"], migrating: ["Migrating", "warn"], cloning: ["Cloning", "warn"], restoring: ["Restoring", "warn"], deleting: ["Deleting", "warn"] };
+  const AWS_STATE = { running: ["Running", "ok"], pending: ["Starting", "warn"], starting: ["Starting", "warn"], rebooting: ["Rebooting", "warn"], stopping: ["Stopping", "warn"], "shutting-down": ["Terminating", "warn"], stopped: ["Stopped", ""], terminated: ["Terminated", ""] };
+  const GCP_STATE = { RUNNING: ["Running", "ok"], PROVISIONING: ["Creating", "warn"], STAGING: ["Starting", "warn"], STOPPING: ["Stopping", "warn"], STOPPED: ["Stopped", ""], TERMINATED: ["Stopped", ""], SUSPENDING: ["Suspending", "warn"], SUSPENDED: ["Suspended", ""], REPAIRING: ["Repairing", "warn"] };
+  const ALIYUN_STATE = { Running: ["Running", "ok"], Starting: ["Starting", "warn"], Stopping: ["Stopping", "warn"], Stopped: ["Stopped", ""], Pending: ["Creating", "warn"] };
+  const KAMATERA_STATE = { on: ["Running", "ok"], off: ["Off", ""] };
+  const DO_STATE = { active: ["Running", "ok"], off: ["Off", ""], new: ["Creating", "warn"], archive: ["Archived", ""] };
+  // Vultr: status says whether it is set up (pending / active / suspended / resizing), power whether it runs.
+  const vultrState = (v) => v.status !== "active" ? ({ pending: ["Creating", "warn"], suspended: ["Suspended", "crit"], resizing: ["Resizing", "warn"] }[v.status] || [v.status, "warn"])
+    : v.powerStatus === "running" ? (v.serverStatus === "ok" ? ["Running", "ok"] : ["Starting", "warn"]) : ["Off", ""];
+  const NETCUP_STATE = { RUNNING: ["Running", "ok"], SHUTOFF: ["Off", ""], SHUTDOWN: ["Shutting down", "warn"], PAUSED: ["Paused", "warn"], PMSUSPENDED: ["Suspended", "warn"], BLOCKED: ["Blocked", "warn"], DISK_SNAPSHOT: ["Snapshotting", "warn"], CRASHED: ["Crashed", "crit"], NOSTATE: ["Unknown", ""] };
+  try { if (location.hash === "#cloud") state.view = "cloud"; } catch {}
+
+  // ---------- formatting ----------
+  function bytes(n) {
+    if (n == null || isNaN(n)) return "–";
+    const u = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let i = 0;
+    while (Math.abs(n) >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(n < 10 ? 2 : 1)) + " " + u[i];
+  }
+  function uptime(sec) {
+    if (!sec) return "–";
+    const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+    return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m} min`;
+  }
+  function ago(iso) {
+    if (!iso) return "";
+    const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+    return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)}h ago`;
+  }
+  const agoCoarse = (iso) => (iso && Date.now() - new Date(iso).getTime() < 60000 ? "less than a minute ago" : ago(iso));
+  const level = (p, warn = 75, crit = 90) => (p == null ? "" : p >= crit ? "crit" : p >= warn ? "warn" : "ok");
+  function health(d) {
+    if (!d) return "pending";
+    const lv = [level(d.cpu?.percent, 80, 95), level(d.memory?.percent, 85, 95), level(d.disk?.percent, 80, 92)];
+    return lv.includes("crit") ? "crit" : lv.includes("warn") ? "warn" : "ok";
+  }
+  function errText(e) {
+    const t = e?.result?.content?.find?.((c) => c.type === "text")?.text;
+    return t || e?.message || String(e);
+  }
+
+  // ---------- data access (live MCP or demo) ----------
+  async function call(tool, input, opts) {
+    if (state.mode === "demo") return Demo.call(tool, input);
+    const res = await state.mcp.callTool(SERVER, tool, input, opts);
+    return res.payload;
+  }
+
+  function watchServer(id) {
+    if (watches.has(id) || state.mode !== "live") return;
+    const unsub = state.mcp.watchTool(SERVER, "server_stats", { id }, (ev) => {
+      if (ev.type === "data") applyStats(id, ev.result.payload);
+      else applyStatsError(id, ev.error);
+    }, { refetchInterval: POLL_MS, cache: { staleTime: 10000, gcTime: 600000 } });
+    watches.set(id, unsub);
+  }
+  // Drops the watch and everything else the page keeps for servers that are no longer listed.
+  function forgetMissing() {
+    const ids = new Set(state.servers.map((s) => s.id));
+    for (const [id, unsub] of watches) if (!ids.has(id)) { unsub(); watches.delete(id); }
+    for (const id of Object.keys(state.stats)) if (!ids.has(id)) delete state.stats[id];
+    for (const id of Object.keys(state.term)) if (!ids.has(id) && !state.term[id].busy) delete state.term[id];
+    if (state.logs && !ids.has(state.logs.server)) state.logs = null;
+  }
+  // Every watch is bound to SERVER: leaving live mode or switching connector drops them all, and the
+  // next loadServers() registers them again.
+  function unwatchAll() {
+    stopPulse();
+    for (const unsub of [...watches.values(), ...cloudWatches.values()]) unsub();
+    watches.clear();
+    cloudWatches.clear();
+  }
+  // Changing the host drops what belonged to the previous one: its log panel and an armed container action.
+  function select(id) {
+    if (state.selected !== id) { state.logs = null; state.armed = null; }
+    state.selected = id;
+  }
+
+  function slot(id) {
+    return (state.stats[id] ||= { data: null, error: null, history: { cpu: [], mem: [] }, live: { cpu: [], mem: [], rx: [], tx: [], at: null }, rate: null, needsApproval: false });
+  }
+  function applyStats(id, data) {
+    if (!data || typeof data !== "object" || !data.memory) return;
+    const s = slot(id);
+    if (s.data?.collectedAt !== data.collectedAt) {
+      s.history.cpu.push(data.cpu.percent);
+      s.history.mem.push(data.memory.percent);
+      s.history.cpu = s.history.cpu.slice(-HISTORY);
+      s.history.mem = s.history.mem.slice(-HISTORY);
+    }
+    s.data = data;
+    s.error = null;
+    s.needsApproval = false;
+    const t = state.term[id];
+    if (t && !t.greeted) greet(id);
+    render();
+  }
+  function applyStatsError(id, err) {
+    const s = slot(id);
+    if (AUTHZ.has(err.code)) s.data = null; // denials retract what was shown
+    if (MISSING.has(err.code)) return enterSetup(setupCopy(err.code));
+    s.needsApproval = err.code === "approval_required" || err.code === "not_in_manifest";
+    s.error = err;
+    render();
+  }
+  // Live figures: the agent samples every watched server once a second (server_pulse) and the page asks
+  // for all of them in one call every second. New samples are appended by time; the latest refreshes CPU,
+  // load, memory and swap in place, while containers, disks and the rest stay from the 30 s server_stats.
+  function applyPulse(payload, rtt = 0) {
+    let changed = false;
+    const serverNow = Date.parse(payload?.collectedAt) || null;
+    for (const [id, r] of Object.entries(payload?.servers || {})) {
+      if (!state.stats[id] && !state.servers.some((x) => x.id === id)) continue;
+      const s = slot(id);
+      const fresh = (r.samples || []).filter((x) => x && x.memory && (!s.live.at || x.t > s.live.at));
+      if (s.pulseError !== (r.error || null)) { s.pulseError = r.error || null; changed = true; }
+      if (!fresh.length) continue;
+      const keep = (list, vals) => [...list, ...vals].slice(-LIVE_POINTS);
+      s.live = {
+        cpu: keep(s.live.cpu, fresh.map((x) => x.cpu.percent)),
+        mem: keep(s.live.mem, fresh.map((x) => x.memory.percent)),
+        rx: keep(s.live.rx, fresh.map((x) => x.net?.rxRate ?? 0)),
+        tx: keep(s.live.tx, fresh.map((x) => x.net?.txRate ?? 0)),
+        at: fresh.at(-1).t,
+      };
+      const p = fresh.at(-1);
+      // Freshness on the browser's own clock, never compared with the server's (they can disagree).
+      s.liveSeen = Date.now();
+      // How old the newest figure is when it reaches the page: its age on the server plus the trip back.
+      s.lag = (serverNow ? Math.max(0, serverNow - Date.parse(p.t)) : 0) + rtt;
+      s.rate = p.net || null;
+      if (s.data) s.data = { ...s.data, cpu: { ...s.data.cpu, percent: p.cpu.percent }, load: { ...s.data.load, ...p.load }, memory: p.memory, swap: p.swap };
+      changed = true;
+    }
+    if (changed) render();
+  }
+  const isLive = (st) => !!st?.liveSeen && st.live.cpu.length >= 2 && Date.now() - st.liveSeen < 15000;
+  const seconds1 = (ms) => `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`;
+
+  // One request for every listed server each second while the page is visible. Not a watchTool: the
+  // runtime clamps watch polling to about 30 s, too slow for live figures, so the page calls the tool
+  // itself (the agent answers from memory in milliseconds). The first call may ask the viewer to allow
+  // server_pulse; declined, or other denials, or three failures in a row stop the loop with the reason
+  // shown in the network card, and the 30 s server_stats carry on either way.
+  let pulseRun = 0; // generation: bumping it ends the running loop
+  let pulseActive = false;
+  let pulseBlock = null; // null | { kind: "approval" } | { kind: "denied" | "error", message }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const pulseInput = () => ({ ids: state.servers.map((x) => x.id).sort(), samples: 10 });
+  function stopPulse() {
+    pulseRun++;
+    pulseActive = false;
+  }
+  function watchPulse() {
+    const want = !document.hidden && !pulseBlock && state.servers.length > 0 && (state.mode === "live" || state.mode === "demo");
+    if (want && !pulseActive) pulseLoop();
+    else if (!want && pulseActive) stopPulse();
+  }
+  // A call goes out every second without waiting for the one before (at most three in flight), so a slow
+  // trip through claude.ai delays the figures but does not thin them out; samples are merged by time.
+  async function pulseLoop() {
+    const run = ++pulseRun;
+    pulseActive = true;
+    let fails = 0;
+    let inFlight = 0;
+    const once = async () => {
+      inFlight++;
+      const started = Date.now();
+      try {
+        const payload = await call("server_pulse", pulseInput(), { cache: false });
+        if (run !== pulseRun) return;
+        fails = 0;
+        state.pulseRtt = Date.now() - started;
+        applyPulse(payload, state.pulseRtt);
+      } catch (err) {
+        if (run !== pulseRun) return;
+        if (err?.code === "rate_limited") return void (state.pulseHoldUntil = Date.now() + (err.retryAfterMs || 30000));
+        if (err?.code === "approval_required") pulseBlock = { kind: "approval" };
+        else if (AUTHZ.has(err?.code)) pulseBlock = { kind: "denied", message: errText(err) };
+        else if (!err?.retryable && ++fails >= 3) pulseBlock = { kind: "error", message: errText(err) };
+        if (pulseBlock) {
+          stopPulse();
+          render();
+        }
+      } finally {
+        inFlight--;
+      }
+    };
+    while (run === pulseRun) {
+      if (inFlight < 3 && Date.now() >= (state.pulseHoldUntil || 0)) once();
+      await sleep(PULSE_MS);
+    }
+  }
+
+  async function refreshStats(id) {
+    try {
+      const data = await call("server_stats", { id }, { cache: { refresh: true, staleTime: 10000, gcTime: 600000 } });
+      applyStats(id, data);
+    } catch (e) {
+      applyStatsError(id, e);
+    }
+  }
+
+  async function listViaAnyServer() {
+    const before = SERVER;
+    for (let i = CANDIDATES.indexOf(SERVER); ; i++) {
+      SERVER = CANDIDATES[i];
+      try {
+        const res = await call("list_servers", {}, { cache: false });
+        if (SERVER !== before) unwatchAll(); // they still point at the other connector
+        return res;
+      } catch (e) {
+        if (state.mode === "demo" || !MISSING.has(e.code) || i === CANDIDATES.length - 1) {
+          SERVER = CANDIDATES[0];
+          throw e;
+        }
+      }
+    }
+  }
+
+  async function loadServers() {
+    try {
+      const res = await listViaAnyServer();
+      state.servers = res.servers || [];
+      state.exec = res.exec !== false;
+      if (state.mode !== "demo") state.mode = "live";
+      if (!state.servers.some((s) => s.id === state.selected)) select(state.servers[0]?.id ?? null);
+      forgetMissing();
+      if (state.mode === "live") state.servers.forEach((s) => watchServer(s.id));
+      else state.servers.forEach((s) => refreshStats(s.id));
+      render();
+      loadCloud();
+    } catch (e) {
+      if (MISSING.has(e.code) || ["not_granted", "capability_disabled", "capability_removed"].includes(e.code)) return enterSetup(setupCopy(e.code), true);
+      if (e.code === "cancelled" || e.code === "approval_required" || e.code === "not_in_manifest") return enterSetup("You haven't allowed this page to use Orrery. Click Reconnect and choose Allow in the prompt.", true);
+      if (e.code === "server_unavailable") return enterSetup("The agent isn't responding; it may still be starting.", true);
+      enterSetup(errText(e), true);
+    }
+  }
+  // Keeps the host list current: machines created or deleted on a cloud come and go without a reload.
+  // A failed refresh keeps the list on screen; only loadServers() decides about the setup screen.
+  async function refreshServerList() {
+    if (state.mode !== "live" || state.refreshingList) return;
+    state.refreshingList = true;
+    try {
+      const res = await call("list_servers", {}, { cache: false });
+      if (state.mode !== "live") return;
+      // A provider whose API failed this time is missing from the list: keep its machines as they were.
+      const failed = new Set((res.discoveryErrors || []).map((e) => e.provider));
+      const listed = new Set((res.servers || []).map((x) => x.id));
+      const servers = [...(res.servers || []), ...state.servers.filter((x) => failed.has(x.source) && !listed.has(x.id))]
+        .sort((a, b) => Number(!!b.self) - Number(!!a.self));
+      state.servers = servers;
+      state.exec = res.exec !== false;
+      if (!servers.some((x) => x.id === state.selected)) select(servers[0]?.id ?? null);
+      forgetMissing();
+      servers.forEach((x) => watchServer(x.id));
+      render();
+    } catch {
+      // keep what is shown; the next refresh tries again
+    } finally {
+      state.refreshingList = false;
+    }
+  }
+
+  // ---------- cloud providers ----------
+  async function loadCloud() {
+    // Already read: only register the watches again (unwatchAll() drops them when the page leaves live mode).
+    if (state.cloud.status === "ready") { if (state.mode === "live") watchCloudTools(); return; }
+    if (state.cloud.status === "loading") return;
+    state.cloud.status = "loading";
+    try {
+      const res = await call("cloud_providers", {}, { cache: false });
+      state.cloud.providers = res.providers || [];
+      state.cloud.status = "ready";
+      state.cloud.error = null;
+      watchCloudTools();
+    } catch (e) {
+      state.cloud.status = "error";
+      state.cloud.error = e;
+    }
+    render();
+  }
+  function watchCloudTools() {
+    for (const p of state.cloud.providers) for (const t of p.tools || []) if (t in CLOUD_POLL) watchCloud(t);
+  }
+  function cloudSlot(tool) {
+    return (state.cloud.slots[tool] ||= { data: null, error: null, needsApproval: false, loading: true });
+  }
+  function watchCloud(tool) {
+    cloudSlot(tool);
+    if (state.mode === "demo") return refreshCloud(tool);
+    if (cloudWatches.has(tool) || state.mode !== "live") return;
+    const long = LONG_POLL.has(tool);
+    const unsub = state.mcp.watchTool(SERVER, tool, {}, (ev) => {
+      if (ev.type === "data") applyCloud(tool, ev.result.payload);
+      else applyCloudError(tool, ev.error);
+    }, { refetchInterval: CLOUD_POLL[tool], cache: { staleTime: long ? CLOUD_POLL[tool] : 30000, gcTime: long ? 7 * 86400000 : 600000 } });
+    cloudWatches.set(tool, unsub);
+  }
+  function applyCloud(tool, data) {
+    if (!data || typeof data !== "object") return;
+    Object.assign(cloudSlot(tool), { data, error: null, needsApproval: false, loading: false });
+    render();
+  }
+  function applyCloudError(tool, err) {
+    const s = cloudSlot(tool);
+    if (AUTHZ.has(err.code)) s.data = null;
+    Object.assign(s, { error: err, needsApproval: err.code === "approval_required" || err.code === "not_in_manifest", loading: false });
+    render();
+  }
+  async function refreshCloud(tool, viaCall) {
+    const s = cloudSlot(tool);
+    s.loading = true;
+    render();
+    if (state.mode === "live" && !viaCall) {
+      try { return await state.mcp.invalidate(SERVER, tool); } catch {} // the watch delivers the fresh result
+    }
+    try {
+      applyCloud(tool, await call(tool, {}, { cache: { refresh: true, staleTime: 30000, gcTime: 600000 } }));
+    } catch (e) {
+      applyCloudError(tool, e);
+    }
+  }
+  // The SSH host a provider resource belongs to. The agent's `server` match covers only saved and
+  // ~/.ssh/config hosts; a discovered host carries its provider record (discovery.js), and its address
+  // is the last resort.
+  const PRIVATE_V4 = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
+  const OWNS = {
+    aws: (p, i) => p.region === i.region && (i.service === "lightsail" ? p.kind === "lightsail" && p.instanceName === i.name : p.kind === "ec2" && p.instanceId === i.id),
+    netcup: (p, n) => p.kind === "netcup" && String(p.serverId) === String(n.id),
+    linode: (p, l) => p.kind === "linode" && String(p.linodeId) === String(l.id),
+    gcp: (p, g) => p.kind === "gcp" && p.project === g.project && p.zone === g.zone && p.name === g.name,
+    aliyun: (p, a) => p.kind === "aliyun" && p.instanceId === a.id,
+    vultr: (p, v) => p.kind === "vultr" && p.instanceId === v.id,
+    digitalocean: (p, o) => p.kind === "digitalocean" && String(p.dropletId) === String(o.id),
+    kamatera: (p, k) => p.kind === "kamatera" && p.serverId === k.id,
+  };
+  const ADDRESSES = {
+    aws: (i) => [i.publicIp, i.ipv6],
+    netcup: (n) => [...(n.ipv4 || []), ...(n.ipv6 || [])],
+    linode: (l) => l.ipv4 || [],
+    gcp: (g) => [g.externalIp, g.ipv6],
+    aliyun: (a) => [a.publicIp],
+    vultr: (v) => [v.ipv4, v.ipv6],
+    digitalocean: (o) => [...(o.ipv4 || []), o.ipv6],
+    kamatera: (k) => k.publicIps || [],
+  };
+  function ownerOf(kind, r) {
+    if (r.server) return state.servers.find((s) => s.id === r.server.id) || r.server;
+    const ips = ADDRESSES[kind](r).filter((ip) => ip && !PRIVATE_V4.test(ip)).map((ip) => String(ip).split("/")[0]);
+    return state.servers.find((s) => s.provider && OWNS[kind]?.(s.provider, r))
+      || state.servers.find((s) => ips.includes(s.host)) || null;
+  }
+  // Matched provider resources for one SSH host.
+  function cloudFor(serverId) {
+    const out = [];
+    const sl = state.cloud.slots;
+    const mine = (kind, r) => ownerOf(kind, r)?.id === serverId;
+    for (const i of sl.aws_instances?.data?.instances || []) if (mine("aws", i)) {
+      const [text, lv] = AWS_STATE[i.state] || [i.state, ""];
+      out.push({ provider: "AWS", text: `${i.service === "lightsail" ? "Lightsail" : "AWS"} · ${i.type} · ${text}`, level: lv });
+    }
+    for (const n of sl.netcup_servers?.data?.servers || []) if (mine("netcup", n)) {
+      const [text, lv] = NETCUP_STATE[n.state] || ["Unknown", ""];
+      out.push({ provider: "netcup", text: `netcup · ${n.product || n.name} · ${text}`, level: lv });
+    }
+    for (const l of sl.linode_instances?.data?.instances || []) if (mine("linode", l)) {
+      const [text, lv] = LINODE_STATE[l.status] || [l.status, ""];
+      out.push({ provider: "Linode", text: `Linode · ${l.type} · ${text}`, level: lv });
+    }
+    for (const g of sl.gcp_instances?.data?.instances || []) if (mine("gcp", g)) {
+      const [text, lv] = GCP_STATE[g.status] || [g.status, ""];
+      out.push({ provider: "Google Cloud", text: `Google Cloud · ${g.machineType} · ${text}`, level: lv });
+    }
+    for (const v of sl.vultr_instances?.data?.instances || []) if (mine("vultr", v)) {
+      const [text, lv] = vultrState(v);
+      out.push({ provider: "Vultr", text: `Vultr · ${v.plan} · ${text}`, level: lv });
+    }
+    for (const o of sl.digitalocean_droplets?.data?.droplets || []) if (mine("digitalocean", o)) {
+      const [text, lv] = DO_STATE[o.status] || [o.status, ""];
+      out.push({ provider: "DigitalOcean", text: `DigitalOcean · ${o.size} · ${text}`, level: lv });
+    }
+    for (const k of sl.kamatera_servers?.data?.servers || []) if (mine("kamatera", k)) {
+      const [text, lv] = KAMATERA_STATE[k.power] || [k.power, ""];
+      out.push({ provider: "Kamatera", text: `Kamatera · ${k.cpu || "?"} · ${mib(k.ramMB)} · ${text}`, level: lv });
+    }
+    for (const a of sl.aliyun_instances?.data?.instances || []) if (mine("aliyun", a)) {
+      const [text, lv] = ALIYUN_STATE[a.status] || [a.status, ""];
+      out.push({ provider: "Alibaba Cloud", text: `Alibaba Cloud · ${a.type} · ${text}${a.chargeType === "PrePaid" && a.expires ? " · expires " + String(a.expires).slice(0, 10) : ""}`, level: lv });
+    }
+    return out;
+  }
+  function invalidateCloudMatches() {
+    if (state.mode !== "live") return;
+    for (const t of PROVIDERS.map((p) => p.main)) if (cloudWatches.has(t)) state.mcp.invalidate(SERVER, t).catch(() => {});
+  }
+  function setView(view) {
+    if (state.view === view) return;
+    state.view = view;
+    try { location.hash = view === "cloud" ? "cloud" : ""; } catch {}
+    render();
+    window.scrollTo?.(0, 0);
+  }
+
+  function setupCopy(code) {
+    return MISSING.has(code)
+      ? "No Orrery connector found yet."
+      : "This view can't call connectors. Sign in to claude.ai and open this page there.";
+  }
+  function enterSetup(reason, canRetry) {
+    if (state.mode === "demo") return;
+    unwatchAll();
+    state.mode = "setup";
+    state.setupReason = reason;
+    state.setupRetry = !!canRetry;
+    render();
+  }
+  function enterDemo() {
+    unwatchAll();
+    state.mode = "demo";
+    state.stats = {};
+    state.term = {};
+    state.servers = Demo.servers();
+    select(state.servers[0].id);
+    state.servers.forEach((s) => refreshStats(s.id));
+    state.cloud = { status: "idle", error: null, providers: [], slots: {} };
+    render();
+    loadCloud();
+  }
+
+  // ---------- rendering ----------
+  // Live figures redraw the page every second. A tap whose button is replaced between press and release is
+  // lost, and a drag-select is cut short, so while a pointer is down redraws wait and one runs on release
+  // (at most 5 s: a release the frame never sees must not freeze the page).
+  let pressedAt = 0, heldRender = false;
+  document.addEventListener("pointerdown", () => { pressedAt = Date.now(); }, true);
+  const release = () => {
+    if (!pressedAt) return;
+    pressedAt = 0;
+    if (heldRender) { heldRender = false; setTimeout(render, 0); }
+  };
+  for (const ev of ["pointerup", "pointercancel"]) document.addEventListener(ev, release, true);
+  window.addEventListener("blur", release);
+
+  function render() {
+    if (pressedAt && Date.now() - pressedAt < 5000) { heldRender = true; return; }
+    for (const b of document.querySelectorAll("[data-view]")) b.setAttribute("aria-selected", String(b.dataset.view === state.view));
+    document.querySelector(".shell").hidden = state.view === "cloud";
+    $("cloud").hidden = state.view !== "cloud";
+    renderFleet();
+    watchPulse();
+    if (state.view === "cloud") return renderCloud();
+    renderHosts();
+    renderDetail();
+  }
+
+  function renderFleet() {
+    const el = $("fleet");
+    if (state.mode === "setup" || state.mode === "loading") {
+      el.__html = null;
+      el.innerHTML = `<span class="chip">${state.mode === "loading" ? "Connecting to the agent…" : "Agent not connected"}</span>`;
+      return;
+    }
+    // Only a current reading counts: a server whose last read failed is "unreachable", not online with old numbers.
+    const fresh = state.servers.map((s) => state.stats[s.id]).filter((st) => st?.data && !st.error).map((st) => st.data);
+    const online = fresh.length;
+    const alerts = fresh.filter((d) => ["warn", "crit"].includes(health(d))).length;
+    const failing = state.servers.filter((s) => state.stats[s.id]?.error).length;
+    const running = fresh.reduce((n, d) => n + (d.docker?.running || 0), 0);
+    const total = fresh.reduce((n, d) => n + (d.docker?.containers?.length || 0), 0);
+    const vms = [
+      ...(state.cloud.slots.aws_instances?.data?.instances || []).filter((i) => i.state !== "terminated").map((i) => i.state === "running"),
+      ...(state.cloud.slots.netcup_servers?.data?.servers || []).filter((n) => !n.disabled).map((n) => n.state === "RUNNING"), // disabled: cancelled, still listed by netcup
+      ...(state.cloud.slots.linode_instances?.data?.instances || []).map((l) => l.status === "running"),
+      ...(state.cloud.slots.gcp_instances?.data?.instances || []).map((g) => g.status === "RUNNING"),
+      ...(state.cloud.slots.vultr_instances?.data?.instances || []).map((v) => vultrState(v)[1] === "ok"),
+      ...(state.cloud.slots.digitalocean_droplets?.data?.droplets || []).map((o) => o.status === "active"),
+      ...(state.cloud.slots.kamatera_servers?.data?.servers || []).map((k) => k.power === "on"),
+      ...(state.cloud.slots.aliyun_instances?.data?.instances || []).map((a) => a.status === "Running"),
+    ];
+    const cloudFailing = Object.values(state.cloud.slots).filter((s) => s.error).length;
+    const html = [
+      state.mode === "demo" ? `<span class="chip warn">Example data</span>` : "",
+      `<span class="chip ok"><b class="num">${online}</b>/<span class="num">${state.servers.length}</span> online</span>`,
+      failing ? `<span class="chip crit"><b class="num">${failing}</b> unreachable</span>` : "",
+      alerts ? `<span class="chip warn"><b class="num">${alerts}</b> high usage</span>` : "",
+      total ? `<button class="chip" type="button" data-containers title="Open the Containers tab of a host that has containers; click again for the next one">Containers <b class="num">${running}</b>/<span class="num">${total}</span> running</button>`
+        : `<span class="chip">Containers <b class="num">0</b>/<span class="num">0</span> running</span>`,
+      vms.length ? `<button class="chip" type="button" data-view="cloud">Cloud instances <b class="num">${vms.filter(Boolean).length}</b>/<span class="num">${vms.length}</span> running</button>` : "",
+      cloudFailing ? `<button class="chip crit" type="button" data-view="cloud"><b class="num">${cloudFailing}</b> cloud reads failed</button>` : "",
+    ].join("");
+    if (el.__html !== html) { el.innerHTML = html; el.__html = html; }
+  }
+
+  function miniBar(label, p) {
+    return `<span class="mini"><span>${label} <span class="num">${p == null ? "–" : Math.round(p) + "%"}</span></span><span class="track"><span class="fill ${level(p)}" style="width:${p ?? 0}%"></span></span></span>`;
+  }
+
+  function renderHosts() {
+    $("hostCount").textContent = state.servers.length ? String(state.servers.length) : "";
+    const list = $("hostList");
+    if (state.mode === "loading" || state.mode === "setup") {
+      list.__html = null;
+      list.innerHTML = `<div class="panel empty">Once the agent is connected, your servers show up here, along with the hosts in ~/.ssh/config on the agent's machine.</div>`;
+      return;
+    }
+    if (!state.servers.length) {
+      list.__html = null;
+      list.innerHTML = `<div class="panel empty">No servers yet. Click Add server at the top, or add a Host to ~/.ssh/config and refresh.</div>`;
+      return;
+    }
+    const groups = new Map();
+    for (const s of state.servers) {
+      const v = vendorOf(s);
+      if (!groups.has(v)) groups.set(v, []);
+      groups.get(v).push(s);
+    }
+    // Every configured Google Cloud project gets its group, an empty one too, so each account shows up.
+    for (const p of state.cloud.providers.find((x) => x.id === "gcp")?.projects || []) if (!groups.has(gcpGroup(p))) groups.set(gcpGroup(p), []);
+    const order = [...groups.keys()].sort((a, b) => vendorRank(a) - vendorRank(b) || namedRank(a) - namedRank(b) || a.localeCompare(b));
+    const scrolled = list.scrollLeft;
+    const html = order.map((v) => {
+      const members = groups.get(v);
+      const bad = members.filter((s) => state.stats[s.id]?.error).length;
+      return `<section class="host-group" aria-label="${esc(v)}">
+        <div class="group-head"><span class="label">${esc(v)}</span><span class="muted num">${members.length}${bad ? ` · <span class="bad">${bad} failing</span>` : ""}</span></div>
+        <div class="group-cards">${members.length ? members.map((s) => hostCard(s, v)).join("") : `<span class="muted" style="font-size:12px;padding:0 2px">No machines in this project yet</span>`}</div>
+      </section>`;
+    }).join("");
+    if (list.__html === html) return;
+    list.innerHTML = html;
+    list.__html = html;
+    list.scrollLeft = scrolled; // phones: the list scrolls sideways
+  }
+
+  // The vendor a host belongs to: its discovery record, else a matched cloud resource, else how it was added.
+  const VENDOR = { netcup: "netcup", ec2: "AWS", lightsail: "AWS", linode: "Linode", gcp: "Google Cloud", aliyun: "Alibaba Cloud", vultr: "Vultr", digitalocean: "DigitalOcean", kamatera: "Kamatera" };
+  // Vendors without discovery: a manually added host joins their group through its own tag (add_server tags).
+  const TAG_VENDOR = { aliyun: "Alibaba Cloud" };
+  const VENDOR_ORDER = ["netcup", "AWS", "Google Cloud", "Linode", "Vultr", "DigitalOcean", "Kamatera", "Alibaba Cloud"];
+  // One group per Google Cloud project. Fill GCP_NAMES to give projects friendly names, e.g.
+  // { "my-project-123456": "staging" }; any other project is named by its id without the random digits
+  // (my-project-123456 -> my-project).
+  const GCP_NAMES = {};
+  // Friendly account names for the other providers, shown after the vendor name like the Google Cloud
+  // groups, e.g. { Vultr: "personal", DigitalOcean: "work" }. Leave empty to show the vendor name alone.
+  const ACCOUNT_NAMES = {};
+  const named = (v) => (ACCOUNT_NAMES[v] ? `${v} · ${ACCOUNT_NAMES[v]}` : v);
+  const gcpGroup = (project) => `Google Cloud · ${GCP_NAMES[project] || String(project || "?").replace(/-\d+(-[a-z]\d+)?$/, "")}`;
+  // Named projects keep the order of GCP_NAMES; unnamed ones follow, alphabetically.
+  const namedRank = (v) => {
+    const i = Object.keys(GCP_NAMES).map(gcpGroup).indexOf(v);
+    return i === -1 ? 99 : i;
+  };
+  function vendorOf(s) {
+    if (s.provider?.kind === "gcp") return gcpGroup(s.provider.project);
+    if (VENDOR[s.provider?.kind]) return named(VENDOR[s.provider.kind]);
+    const matched = cloudFor(s.id).map((c) => c.provider).find((p) => VENDOR_ORDER.includes(p));
+    if (matched) return named(matched);
+    const tagged = (s.tags || []).map((t) => TAG_VENDOR[String(t).toLowerCase()]).find(Boolean);
+    if (tagged) return named(tagged);
+    return s.source === "ssh_config" ? "SSH config" : "Added manually";
+  }
+  const vendorRank = (v) => {
+    const base = v.split(" · ")[0];
+    return VENDOR_ORDER.includes(base) ? VENDOR_ORDER.indexOf(base) : VENDOR_ORDER.length + (v === "Added manually" ? 0 : 1);
+  };
+
+  function hostCard(s, vendor) {
+      const st = state.stats[s.id] || {};
+      const d = st.data;
+      const dot = st.error ? "crit" : health(d);
+      const roles = s.roleTags || [];
+      // The group heading already names the vendor: its own tag is left out of the card.
+      const providers = [...new Set(cloudFor(s.id).map((c) => c.provider))].filter((p) => p !== vendor.split(" · ")[0]);
+      const shown = new Set([...roles, ...providers, vendor, vendor.split(" · ")[0]].map((t) => String(t).toLowerCase())); // discovery also tags "netcup", "aws", "linode"
+      const tags = roles.map((t) => `<span class="tag role">${esc(t)}</span>`).join("")
+        + providers.map((p) => `<span class="tag">${esc(p)}</span>`).join("")
+        + (s.tags || []).filter((t) => !shown.has(String(t).toLowerCase()) && !(s.self && t === "orrery-host"))
+          .map((t) => `<span class="tag ${t === "example" ? "example" : ""}">${esc(t)}</span>`).join("");
+      return `<button class="host${s.self ? " self" : ""}" type="button" data-host="${esc(s.id)}" aria-current="${s.id === state.selected}">
+        <span class="dot ${dot}" title="${dot === "pending" ? "Loading" : ""}"></span>
+        <span class="host-title"><span class="host-name">${esc(s.name)}</span>${s.self ? `<span class="core-badge">Orrery host</span>` : ""}</span>
+        <span class="host-addr">${esc(s.username)}@${esc(s.host)}${s.port && s.port !== 22 ? ":" + s.port : ""}</span>
+        ${d ? `<span class="host-mini${st.error ? " stale" : ""}" title="${st.error ? "Last successful reading" : ""}">${miniBar("CPU", d.cpu.percent)}${miniBar("Mem", d.memory.percent)}${miniBar("Disk", d.disk?.percent)}</span>` : ""}
+        ${st.error ? `<span class="host-addr" style="color:var(--crit)">${esc(st.needsApproval ? "Needs approval" : "Unreachable")}</span>` : ""}
+        ${tags ? `<span class="tagline">${tags}</span>` : ""}
+      </button>`;
+  }
+
+  // ---------- cloud view ----------
+  function renderCloud() {
+    const el = $("cloud");
+    if (state.mode === "loading") { el.innerHTML = `<div class="panel empty">Connecting to the agent…</div>`; return; }
+    if (state.mode === "setup") { el.innerHTML = renderSetup(); return; }
+    const c = state.cloud;
+    if (c.status === "error") {
+      const e = c.error;
+      const old = /not found|unknown tool/i.test(errText(e));
+      const local = e.code === "not_in_manifest" && SERVER.startsWith("host:");
+      const msg = old ? "This agent has no cloud features yet. Update it (git pull, then docker compose up -d --build in deploy/) and click Retry."
+        : local ? "This page isn't allowed to read cloud providers through the local agent. Use the hosted Orrery connector instead, or republish this page from Claude Code on this computer with the cloud tools added for host:orrery."
+        : e.code === "approval_required" || e.code === "not_in_manifest" || e.code === "cancelled" ? "Orrery needs your approval to read the cloud providers."
+        : e.code === "server_unavailable" ? "The agent isn't responding right now." : errText(e);
+      el.innerHTML = `<div class="panel pane"><div class="notice ${old || local ? "" : "crit"}"><p>${esc(msg)}</p><button class="btn sm" type="button" data-act="cloud-retry">Retry</button></div></div>`;
+      return;
+    }
+    if (c.status !== "ready") { el.innerHTML = `<div class="panel empty">Loading cloud providers…</div>`; return; }
+    // Live figures redraw the page every second. Each provider has its own box, rewritten only when its HTML
+    // changed, so a table scrolled sideways (phones) stays where it was and text can be selected.
+    if (!el.querySelector(":scope > [data-sec]")) el.innerHTML = PROVIDERS.map((d) => `<div data-sec="${d.id}"></div>`).join("");
+    for (const def of PROVIDERS) {
+      const box = el.querySelector(`:scope > [data-sec="${def.id}"]`);
+      const html = sectionHtml(def);
+      if (box.__html === html) continue;
+      const x = box.querySelector(".table-wrap")?.scrollLeft || 0;
+      box.innerHTML = html;
+      box.__html = html;
+      const wrap = box.querySelector(".table-wrap");
+      if (wrap) wrap.scrollLeft = x;
+    }
+  }
+
+  const pill = (map, key, fallback = "Unknown") => {
+    const [text, lv] = map[key] || [key || fallback, ""];
+    return `<span class="pill ${lv}">${esc(text)}</span>`;
+  };
+  const hostLink = (srv) => srv ? `<button class="link" type="button" data-goto="${esc(srv.id)}" title="Open in the hosts view">${esc(srv.name)}</button>` : `<span class="muted">–</span>`;
+  const day = (iso) => (iso ? esc(String(iso).slice(0, 10)) : "–");
+  const mib = (n) => (n == null ? "–" : bytes(n * 1024 * 1024));
+
+  function slotNotice(tool, label) {
+    const s = cloudSlot(tool);
+    if (!s.error) return "";
+    if (s.needsApproval) return `<div class="notice warn"><p>Orrery needs your approval to read ${esc(label)}.</p><button class="btn sm" type="button" data-act="cloud-approve" data-tool="${tool}">Allow and load</button></div>`;
+    const e = s.error;
+    const msg = e.code === "server_unavailable" ? "The agent isn't responding right now." : e.code === "needs_reauth" ? "The connector needs you to sign in again: claude.ai → Settings → Connectors." : "Couldn't load: " + errText(e);
+    return `<div class="notice crit"><p>${esc(msg)}${s.data ? " Showing the last successful reading below." : ""}</p><button class="btn sm" type="button" data-act="cloud-refresh" data-tool="${tool}">Retry</button></div>`;
+  }
+
+  function sectionHtml(def) {
+    const p = state.cloud.providers.find((x) => x.id === def.id);
+    const title = (sub) => `<div class="section-title"><span class="mark" aria-hidden="true">${def.mark}</span><div style="min-width:0"><h2>${def.name}</h2>${sub ? `<div class="sub">${sub}</div>` : ""}</div></div>`;
+    if (!p?.configured) {
+      const why = p?.error ? `Couldn't read credentials: ${esc(p.error)}` : `The agent has no read-only credentials for ${def.name} yet. Put them in the agent's data directory (deploy/data/) as described in <span class="mono">${def.readme}</span>, then restart the agent.`;
+      return `<section class="panel section off"><div class="section-head">${title("Not configured")}</div><div class="section-body"><div class="notice"><p>${why}</p></div></div></section>`;
+    }
+    const s = cloudSlot(def.main);
+    const d = s.data;
+    const account = ACCOUNT_NAMES[def.name] ? `Account ${esc(ACCOUNT_NAMES[def.name])} · ` : "";
+    const sub = account + ({
+      aws: Array.isArray(p.regions) ? esc(p.regions.join(" · ")) : "All regions",
+      netcup: "Server Control Panel",
+      linode: "Akamai Cloud · All regions",
+      gcp: `Compute Engine · ${(p.projects || []).map((x) => esc(GCP_NAMES[x] || x)).join(" · ") || "All projects"}`,
+      vultr: "All regions",
+      digitalocean: "All regions",
+      kamatera: "All data centers",
+      aliyun: "ECS · All regions",
+    }[def.id] || "");
+    const updated = d ? `Updated ${agoCoarse(d.collectedAt)}` : s.loading ? "Loading…" : "";
+    const head = `<div class="section-head">${title(sub)}<div class="head-actions">
+        ${d ? summaryChips(def.id, d) : ""}
+        <span class="muted" style="font-size:12.5px">${updated}</span>
+        <button class="btn sm" type="button" data-act="cloud-refresh" data-tool="${def.main}">Refresh</button>
+      </div></div>`;
+    const BODY = { aws: () => awsBody(d, p), netcup: () => netcupBody(d), linode: () => linodeBody(d), gcp: () => gcpBody(d), vultr: () => vultrBody(d), digitalocean: () => doBody(d), kamatera: () => kamateraBody(d), aliyun: () => aliyunBody(d) };
+    const body = d ? BODY[def.id]()
+      : s.error ? "" : `<div class="empty">Loading ${def.name}…</div>`;
+    return `<section class="panel section ${s.error ? "failed" : ""}">${head}<div class="section-body">${slotNotice(def.main, def.name)}${s.error && d ? `<div class="stale">${body}</div>` : body}</div></section>`;
+  }
+
+  function summaryChips(id, d) {
+    const [list, up] = {
+      aws: [(d.instances || []).filter((i) => i.state !== "terminated"), (i) => i.state === "running"],
+      netcup: [d.servers || [], (x) => x.state === "RUNNING"],
+      linode: [d.instances || [], (x) => x.status === "running"],
+      gcp: [d.instances || [], (x) => x.status === "RUNNING"],
+      vultr: [d.instances || [], (x) => vultrState(x)[1] === "ok"],
+      digitalocean: [d.droplets || [], (x) => x.status === "active"],
+      kamatera: [d.servers || [], (x) => x.power === "on"],
+      aliyun: [d.instances || [], (x) => x.status === "Running"],
+    }[id];
+    return `<span class="chip ok"><b class="num">${list.filter(up).length}</b>/<span class="num">${list.length}</span> running</span>`;
+  }
+
+  // One table per provider: running first, then by name.
+  function table(head, rows, empty) {
+    return rows.length ? `<div class="table-wrap"><table><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>` : `<div class="empty">${empty}</div>`;
+  }
+  const byRunning = (up, name) => (a, b) => Number(up(b)) - Number(up(a)) || String(name(a)).localeCompare(String(name(b)));
+  const listErrors = (items, key, label) => {
+    const bad = (items || []).filter((x) => x.error).map((x) => `${x[key]}: ${x.error}`);
+    return bad.length ? `<div class="notice warn"><p>Some ${label} failed to load; the rest are shown. ${esc(bad.join("; "))}</p></div>` : "";
+  };
+
+  function gcpBody(d) {
+    const rows = [...d.instances].sort(byRunning((g) => g.status === "RUNNING", (g) => g.name)).map((g) => `<tr>
+        <td>${pill(GCP_STATE, g.status)}</td>
+        <td><div class="cname">${esc(g.name)}</div><div class="cimg">${esc(GCP_NAMES[g.project] || g.project)}</div></td>
+        <td><span class="mono">${esc(g.machineType || "–")}</span><div class="cimg">${g.spot ? "Spot" : "Standard"}</div></td>
+        <td class="mono muted">${esc(g.zone || "–")}</td>
+        <td><span class="mono">${copyable(g.externalIp)}</span><div class="cimg">${copyable(g.internalIp, "")}</div></td>
+        <td class="num muted">${day(g.created)}</td>
+        <td>${hostLink(ownerOf("gcp", g))}</td>
+      </tr>`);
+    return listErrors(d.projects, "project", "projects") + table(["Status", "Instance / account", "Machine type", "Zone", "Public / private IP", "Created", "SSH host"], rows, "No instances in these projects.");
+  }
+
+  function vultrBody(d) {
+    const rows = [...d.instances].sort(byRunning((v) => vultrState(v)[1] === "ok", (v) => v.label)).map((v) => {
+      const [text, lv] = vultrState(v);
+      return `<tr>
+        <td><span class="pill ${lv}">${esc(text)}</span></td>
+        <td><div class="cname">${esc(v.label || v.hostname || v.id)}</div><div class="cimg">${esc(v.id)}</div></td>
+        <td><span class="mono">${esc(v.plan || "–")}</span><div class="cimg">${esc(v.os || "")}</div></td>
+        <td class="mono muted">${esc(v.region || "–")}</td>
+        <td><span class="mono">${copyable(v.ipv4)}</span><div class="cimg">${copyable(v.ipv6, "")}</div></td>
+        <td class="num">${v.vcpus ?? "–"} vCPU · ${mib(v.memoryMB)}<div class="cimg">Disk ${v.diskGB ?? "–"} GB</div></td>
+        <td class="num muted">${day(v.created)}</td>
+        <td>${hostLink(ownerOf("vultr", v))}</td>
+      </tr>`;
+    });
+    return table(["Status", "Instance", "Plan / OS", "Region", "Public IP", "Size", "Created", "SSH host"], rows, "No instances in this Vultr account yet.");
+  }
+
+  function doBody(d) {
+    const rows = [...d.droplets].sort(byRunning((o) => o.status === "active", (o) => o.name)).map((o) => `<tr>
+        <td>${pill(DO_STATE, o.status)}</td>
+        <td><div class="cname">${esc(o.name)}</div><div class="cimg">${esc(o.id)}</div></td>
+        <td><span class="mono">${esc(o.size || "–")}</span><div class="cimg">${esc(o.image || "")}</div></td>
+        <td class="mono muted">${esc(o.region || "–")}</td>
+        <td><span class="mono">${copyable((o.ipv4 || [])[0])}</span><div class="cimg">${copyable((o.privateIpv4 || [])[0], "")}</div></td>
+        <td class="num">${o.vcpus ?? "–"} vCPU · ${mib(o.memoryMB)}<div class="cimg">Disk ${o.diskGB ?? "–"} GB</div></td>
+        <td class="num muted">${day(o.created)}</td>
+        <td>${hostLink(ownerOf("digitalocean", o))}</td>
+      </tr>`);
+    return table(["Status", "Droplet", "Size / image", "Region", "Public / private IP", "Specs", "Created", "SSH host"], rows, "No droplets in this DigitalOcean account yet.");
+  }
+
+  function kamateraBody(d) {
+    const rows = [...d.servers].sort(byRunning((k) => k.power === "on", (k) => k.name)).map((k) => `<tr>
+        <td>${pill(KAMATERA_STATE, k.power)}</td>
+        <td><div class="cname">${esc(k.name)}</div><div class="cimg">${esc(k.id)}</div></td>
+        <td class="mono muted">${esc(k.datacenter || "–")}</td>
+        <td><span class="mono">${copyable(k.ipv4)}</span><div class="cimg">${copyable((k.privateIps || [])[0], "")}</div></td>
+        <td class="num">${esc(k.cpu || "–")} · ${mib(k.ramMB)}<div class="cimg">Disk ${(k.diskSizesGB || []).join(" + ") || "–"} GB</div></td>
+        <td>${k.billing === "monthly" ? "Monthly" : k.billing === "hourly" ? "Hourly" : esc(k.billing || "–")}<div class="cimg">${k.priceMonthlyOn != null ? `$${k.priceMonthlyOn}/mo` : ""}</div></td>
+        <td>${hostLink(ownerOf("kamatera", k))}</td>
+      </tr>`);
+    return listErrors(d.servers, "name", "servers") + table(["Status", "Server", "Data center", "Public / private IP", "Specs", "Billing", "SSH host"], rows, "No servers in this Kamatera account yet.");
+  }
+
+  function aliyunBody(d) {
+    const rows = [...d.instances].sort(byRunning((a) => a.status === "Running", (a) => a.name)).map((a) => `<tr>
+        <td>${pill(ALIYUN_STATE, a.status)}</td>
+        <td><div class="cname">${esc(a.name || a.id)}</div><div class="cimg">${esc(a.id)}</div></td>
+        <td><span class="mono">${esc(a.type || "–")}</span><div class="cimg">${esc(a.os || "")}</div></td>
+        <td class="mono muted">${esc(a.zone || a.region)}</td>
+        <td><span class="mono">${copyable(a.publicIp)}</span><div class="cimg">${copyable(a.privateIp, "")}</div></td>
+        <td class="num">${a.cpu ?? "–"} vCPU · ${mib(a.memoryMiB)}<div class="cimg">Out ${a.bandwidthOutMbps ?? "–"} Mbps</div></td>
+        <td>${a.chargeType === "PrePaid" ? `Subscription<div class="cimg">expires ${day(a.expires)}</div>` : "Pay as you go"}</td>
+        <td>${hostLink(ownerOf("aliyun", a))}</td>
+      </tr>`);
+    return listErrors(d.regions, "region", "regions")
+      + table(["Status", "Instance", "Type / OS", "Zone", "Public / private IP", "Specs", "Billing", "SSH host"], rows, "No ECS instances in this Alibaba Cloud account.");
+  }
+
+  function linodeBody(d) {
+    const publicV4 = (l) => (l.ipv4 || []).find((ip) => !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip));
+    const rows = [...d.instances].sort((a, b) => Number(b.status === "running") - Number(a.status === "running") || String(a.label).localeCompare(String(b.label))).map((l) => `<tr>
+        <td>${pill(LINODE_STATE, l.status)}</td>
+        <td><div class="cname">${esc(l.label)}</div><div class="cimg">${esc(l.id)}</div></td>
+        <td><span class="mono">${esc(l.type || "–")}</span><div class="cimg">${esc(l.image || "")}</div></td>
+        <td class="mono muted">${esc(l.region || "–")}</td>
+        <td><span class="mono">${copyable(publicV4(l))}</span></td>
+        <td class="num">${l.vcpus ?? "–"} vCPU · ${mib(l.memoryMB)}</td>
+        <td class="num muted">${day(l.created)}</td>
+        <td>${hostLink(ownerOf("linode", l))}</td>
+      </tr>`).join("");
+    return rows ? `<div class="table-wrap"><table>
+        <thead><tr><th>Status</th><th>Instance</th><th>Plan / image</th><th>Region</th><th>Public IP</th><th>Size</th><th>Created</th><th>SSH host</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>` : `<div class="empty">No instances in this Linode account yet.</div>`;
+  }
+
+  function awsBody(d, p) {
+    const order = { running: 0, pending: 1, stopping: 2, stopped: 3, "shutting-down": 4, terminated: 5 };
+    const rows = [...d.instances].sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || (a.name || a.id).localeCompare(b.name || b.id)).map((i) => `<tr>
+        <td>${pill(AWS_STATE, i.state)}</td>
+        <td><div class="cname">${esc(i.name || i.id)}</div><div class="cimg">${i.id !== i.name ? esc(i.id) : ""}</div></td>
+        <td><span class="mono">${esc(i.type || "–")}</span><div class="cimg">${i.service === "lightsail" ? "Lightsail" : "EC2"}</div></td>
+        <td class="mono muted">${esc(i.zone || i.region)}</td>
+        <td><span class="mono">${copyable(i.publicIp)}</span><div class="cimg">${copyable(i.privateIp, "")}</div></td>
+        <td class="r num">${i.cpuPercent == null ? "–" : i.cpuPercent.toFixed(1) + "%"}</td>
+        <td class="num muted">${day(i.launchTime)}</td>
+        <td>${hostLink(ownerOf("aws", i))}</td>
+      </tr>`).join("");
+    const regionErrors = d.regions.flatMap((r) => [r.error ? `${r.region} EC2: ${r.error}` : "", r.lightsailError ? `${r.region} Lightsail: ${r.lightsailError}` : ""]).filter(Boolean);
+    const notes = [
+      regionErrors.length ? `<div class="notice warn"><p>Some regions failed to load; the others are shown. ${esc(regionErrors.join("; "))}</p></div>` : "",
+      d.cpu?.status === "denied" ? `<p class="muted" style="margin:0;font-size:12.5px">No CloudWatch read access, so the CPU column is empty. Add cloudwatch:GetMetricData to the IAM policy to fill it.</p>` : "",
+    ].join("");
+    const table = rows ? `<div class="table-wrap"><table>
+        <thead><tr><th>Status</th><th>Instance</th><th>Type</th><th>Zone</th><th>Public / private IP</th><th class="r">CPU</th><th>Launched</th><th>SSH host</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>` : `<div class="empty">No EC2 instances in these regions.</div>`;
+    return notes + table + ((p.tools || []).includes("aws_cost") ? costBlock() : "");
+  }
+
+  function costBlock() {
+    const s = cloudSlot("aws_cost");
+    const d = s.data;
+    const money = (n, cur) => `${cur === "USD" ? "$" : ""}${n.toFixed(2)}${cur === "USD" ? "" : " " + esc(cur)}`;
+    let body = s.error && !d ? "" : !d ? `<div class="muted" style="font-size:12.5px">Loading the bill…</div>` : (() => {
+      const top = d.services.slice(0, 6);
+      const max = Math.max(...top.map((x) => x.amount), 0.01);
+      return `<div class="cost">
+        <div><div class="big num">${money(d.total, d.currency)}</div>
+          <div class="muted" style="font-size:12.5px;margin-top:6px">${d.monthToDate ? "Month to date" : "Last month"} (from ${esc(d.start)})${d.estimated ? ", estimated" : ""}</div></div>
+        <div class="bars">${top.map((x) => `<div class="bar-row"><span class="name" title="${esc(x.service)}">${esc(x.service)}</span><span class="num" style="text-align:right">${money(x.amount, x.unit)}</span><span class="track"><span class="fill" style="width:${(x.amount / max) * 100}%"></span></span></div>`).join("")}</div>
+      </div>`;
+    })();
+    if (s.error && d) body = `<div class="stale">${body}</div>`;
+    return `<div class="kv"><div class="block-label"><h3 class="label" style="margin:0">Estimated bill · Cost Explorer</h3><span class="muted" style="font-size:12px">${d ? "Updated " + agoCoarse(d.collectedAt) + " · read every 6 hours" : ""}</span></div>
+      <div style="margin-top:10px;display:flex;flex-direction:column;gap:10px">${slotNotice("aws_cost", "the bill")}${body}</div></div>`;
+  }
+
+  function netcupBody(d) {
+    if (!d.servers.length) return `<div class="empty">No servers in this netcup account.</div>`;
+    const rows = d.servers.map((n) => `<tr>
+        <td>${n.disabled ? `<span class="pill">Disabled</span>` : pill(NETCUP_STATE, n.state)}</td>
+        <td><div class="cname">${esc(n.nickname || n.name)}</div><div class="cimg">${esc(n.nickname ? n.name : n.hostname || "")}</div></td>
+        <td>${esc(n.product || "–")}<div class="cimg">${esc(n.site || "")}</div></td>
+        <td class="num">${n.cpuCount == null ? "–" : n.cpuCount + " vCPU"} · ${mib(n.memoryMiB)}${n.diskMiB ? `<div class="cimg">Disk ${mib(n.diskMiB)}</div>` : ""}</td>
+        <td><span class="mono">${copyable(n.ipv4[0])}</span>${n.ipv4.length > 1 ? ` <span class="muted">+${n.ipv4.length - 1}</span>` : ""}<div class="cimg">${copyable(n.ipv6[0], "")}</div></td>
+        <td class="num muted">${n.state === "RUNNING" ? uptime(n.uptimeSec) : "–"}</td>
+        <td>${hostLink(ownerOf("netcup", n))}${n.error ? `<div class="cimg" style="color:var(--crit)">${esc(n.error)}</div>` : ""}</td>
+      </tr>`).join("");
+    return `<div class="table-wrap"><table>
+      <thead><tr><th>Status</th><th>Server</th><th>Product / site</th><th>Specs</th><th>Public IP</th><th>Uptime</th><th>SSH host</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  }
+
+  function renderSetup() {
+    return `<div class="panel pane setup">
+      <h2>Connect the Orrery agent</h2>
+      <p class="muted" style="margin:6px 0 0;max-width:72ch">${esc(state.setupReason || "")} This page can't open SSH connections itself; the Orrery agent connects to your servers for it. Run the agent on a server, or on your own computer.</p>
+      <h3 class="label" style="margin-top:18px">Option 1: on a server (recommended; works on the web and in the mobile apps)</h3>
+      <ol>
+        <li>Deploy Orrery as described in <code>docs/deploy.md</code>: a Cloudflare Tunnel routes <code>&lt;your-host&gt;</code> to <code>http://orrery:8787</code>, and a WAF rule lets in only Anthropic's 160.79.104.0/21. The server needs no open inbound ports.</li>
+        <li>On that server, start the connector and read its token (it is never printed to the logs):
+          <pre>cd orrery/deploy
+docker compose up -d
+cat data/token</pre></li>
+        <li>In claude.ai, open Settings → Connectors → Add custom connector. Name it <code>Orrery</code> (the page looks the connector up by this name) and set the URL to <code>https://&lt;your-host&gt;/mcp/&lt;token&gt;</code>.</li>
+        <li>Come back to this page, click Reconnect, and choose Allow on the first call.</li>
+      </ol>
+      <h3 class="label" style="margin-top:18px">Option 2: on your own computer (Claude desktop app only)</h3>
+      <ol>
+        <li>Run <code>cd orrery &amp;&amp; npm install</code>, then in the Claude desktop app open Settings → Developer → Edit config and add:
+          <pre>{ "mcpServers": { "orrery": { "command": "node", "args": ["/path/to/orrery/agent/src/index.js"] } } }</pre></li>
+        <li>Restart the Claude desktop app and open this page in the app.</li>
+      </ol>
+      <div class="head-actions" style="margin-top:16px">
+        <button class="btn primary" type="button" data-act="retry">Reconnect</button>
+        <button class="btn" type="button" data-act="demo">View example</button>
+      </div>
+    </div>`;
+  }
+
+  // The detail frame is rebuilt only when the host, tab or mode changes; stats updates
+  // patch the header and pane in place so the console keeps focus and scrollback.
+  let mounted = "";
+  function renderDetail(headOnly) {
+    const el = $("detail");
+    if (state.mode === "loading") { mounted = ""; el.innerHTML = `<div class="panel empty">Connecting to the agent…</div>`; return; }
+    if (state.mode === "setup") { mounted = ""; el.innerHTML = renderSetup(); return; }
+    const s = state.servers.find((x) => x.id === state.selected);
+    if (!s) { mounted = ""; el.innerHTML = `<div class="panel empty">Select a server on the left to see its details.</div>`; return; }
+
+    const st = slot(s.id);
+    const d = st.data;
+    const key = `${state.mode}|${s.id}|${state.tab}|${state.exec}`;
+    if (mounted !== key) {
+      mounted = key;
+      headOnly = false;
+      el.innerHTML = `<div class="panel"><div class="head" id="head"></div><div class="tabs" id="tabs" role="tablist"></div><div class="pane" id="pane"></div></div>`;
+      if (state.tab === "terminal") {
+        if (state.exec) $("pane").appendChild(buildTerminal(s));
+        else $("pane").innerHTML = `<div id="termNotice"></div><div class="notice"><p>This agent runs read-only (ORRERY_ALLOW_EXEC=0), so the terminal and container start/stop are turned off. To use them, set it to 1 and restart the agent.</p></div>`;
+      }
+    }
+    $("head").innerHTML = headHtml(s, st, d);
+    if (headOnly) return;
+    const containers = d?.docker?.containers?.length ?? 0;
+    $("tabs").innerHTML = `
+      <button class="tab" role="tab" type="button" data-tab="overview" aria-selected="${state.tab === "overview"}">Overview</button>
+      <button class="tab" role="tab" type="button" data-tab="docker" aria-selected="${state.tab === "docker"}">Containers<span class="count num">${containers}</span></button>
+      <button class="tab" role="tab" type="button" data-tab="terminal" aria-selected="${state.tab === "terminal"}">Terminal</button>`;
+
+    const notice = st.error ? errorNotice(st) + `<div style="height:12px"></div>` : "";
+    if (state.tab === "terminal") { $("termNotice").innerHTML = notice; refreshPrompt(s.id); return; }
+    const body = state.tab === "overview"
+      ? (d ? overview(d, st) : st.error ? "" : `<div class="empty">Reading ${esc(s.host)} over SSH…</div>`)
+      : (d ? dockerPane(d) : st.error ? "" : `<div class="empty">Loading containers…</div>`);
+    // Stats of any server re-render the pane: the open log keeps its scroll position.
+    const log = $("pane").querySelector(".logs pre");
+    const kept = log && { container: log.dataset.log, top: log.scrollTop };
+    $("pane").innerHTML = notice + body;
+    const again = kept && $("pane").querySelector(".logs pre");
+    if (again && again.dataset.log === kept.container) again.scrollTop = kept.top;
+  }
+
+  function headHtml(s, st, d) {
+    const facts = d ? [
+      `<span class="chip">${esc(d.os)}</span>`,
+      `<span class="chip">Up ${uptime(d.uptimeSec)}</span>`,
+      `<span class="chip">Latency <span class="num">${d.latencyMs ?? "–"}</span> ms</span>`,
+      d.rebootRequired ? `<span class="chip warn">Reboot required</span>` : "",
+      d.updatesAvailable ? `<span class="chip warn"><span class="num">${d.updatesAvailable}</span> updates available</span>` : "",
+    ].join("") : "";
+    const cloudFacts = cloudFor(s.id).map((c) => `<button class="chip ${c.level}" type="button" data-view="cloud" title="View in the clouds view">${esc(c.text)}</button>`).join("");
+    return `
+      <div style="min-width:0">
+        <h1>${esc(s.name)}${s.self ? ` <span class="core-badge">Orrery host</span>` : ""}</h1>
+        <div class="sub">${esc(s.username)}@${copyable(s.host)}:${s.port || 22}${d ? " · " + esc(d.hostname) : ""}${s.originalName && s.originalName !== d?.hostname ? ` · <span class="orig">${esc(s.originalName)}</span>` : ""}</div>
+        <div class="facts">${(s.roleTags || []).map((t) => `<span class="tag role">${esc(t)}</span>`).join("")}${facts}${cloudFacts}</div>
+        ${s.self ? `<p class="core-note">Orrery runs on this server, so all monitoring and management goes through it. Don't shut it down, reboot it or change its firewall. Orrery refuses to power it off, reboot it, boot it into a rescue system or reinstall it from a chat; do that in your provider's own control panel.</p>` : ""}
+        ${s.note ? `<p class="muted" style="margin:8px 0 0">${esc(s.note)}</p>` : ""}
+      </div>
+      <div class="head-actions">
+        <span class="muted" style="font-size:12.5px">${d ? (isLive(st) ? `<span class="live-badge"><i></i>Live</span> · containers and disks updated ` : "Updated ") + ago(d.collectedAt) : st.error ? "" : "Loading…"}</span>
+        ${state.exec ? "" : `<span class="tag" title="The agent runs with ORRERY_ALLOW_EXEC=0">Read-only</span>`}
+        <button class="btn sm" type="button" data-act="refresh">Refresh</button>
+        ${s.source === "local" ? `<button class="btn sm" type="button" data-act="edit">Edit</button>`
+          : ["netcup", "aws", "linode", "gcp", "aliyun", "vultr", "digitalocean", "kamatera"].includes(s.source) ? `<span class="tag" title="Discovered automatically from the cloud provider">From ${({ aws: "AWS", netcup: "netcup", linode: "Linode", gcp: "Google Cloud", aliyun: "Alibaba Cloud", vultr: "Vultr", digitalocean: "DigitalOcean", kamatera: "Kamatera" })[s.source]}</span>`
+          : `<span class="tag" title="Edit it in ~/.ssh/config">ssh config</span>`}
+      </div>`;
+  }
+
+  function errorNotice(st) {
+    const e = st.error;
+    if (st.needsApproval) return `<div class="notice warn"><p>Orrery needs your approval to read this server.</p><button class="btn sm" type="button" data-act="approve">Allow and load</button></div>`;
+    const s = state.servers.find((x) => x.id === state.selected);
+    const notOnboarded = ["netcup", "aws", "linode", "gcp", "aliyun", "vultr", "digitalocean", "kamatera"].includes(s?.source) && /authentication methods failed/i.test(errText(e));
+    const msg = notOnboarded ? "This server isn't onboarded yet. Ask Claude in a chat to onboard " + s.name + "; once that's done, its status shows up here automatically."
+      : e.code === "tool_error" ? errText(e) : e.code === "server_unavailable" ? "The agent isn't responding right now." : errText(e);
+    const stale = st.data ? "Showing the last successful reading below." : "";
+    return `<div class="notice crit"><p>${esc(msg)} ${stale}</p><button class="btn sm" type="button" data-act="refresh">Retry</button></div>`;
+  }
+
+  function spark(values, max = 100) {
+    if (values.length < 2) return `<svg class="spark" viewBox="0 0 120 34" aria-hidden="true"><line x1="0" y1="33" x2="120" y2="33" stroke="var(--line)" stroke-width="1"/></svg>`;
+    const step = 120 / (Math.max(values.length, 12) - 1);
+    const x0 = 120 - step * (values.length - 1);
+    const pts = values.map((v, i) => [x0 + i * step, 32 - (Math.min(v, max) / max) * 30]);
+    const line = pts.map((p) => p.map((n) => n.toFixed(1)).join(",")).join(" ");
+    const last = pts[pts.length - 1];
+    return `<svg class="spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+      <line x1="0" y1="33" x2="120" y2="33" stroke="var(--line)" stroke-width="1"/>
+      <polygon points="${x0.toFixed(1)},33 ${line} ${last[0].toFixed(1)},33" fill="var(--accent-soft)"/>
+      <polyline points="${line}" fill="none" stroke="var(--accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+      <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2" fill="var(--accent)"/>
+    </svg>`;
+  }
+
+  function meter(title, p, foot, hist) {
+    return `<div class="meter">
+      <span class="label">${title}</span>
+      <span class="big num">${p == null ? "–" : `${Math.round(p * 10) / 10}<small>%</small>`}</span>
+      <span class="track"><span class="fill ${level(p)}" style="width:${Math.min(p ?? 0, 100)}%"></span></span>
+      <span class="foot num">${foot}</span>
+      ${hist ? spark(hist) : ""}
+    </div>`;
+  }
+
+  // Download and upload as two lines on one scale (the larger of the two), last 5 minutes of pulses.
+  function netSpark(rx, tx) {
+    const n = Math.max(rx.length, tx.length);
+    if (n < 2) return `<svg class="netspark" viewBox="0 0 240 56" aria-hidden="true"><line x1="0" y1="55" x2="240" y2="55" stroke="var(--line)" stroke-width="1"/></svg>`;
+    const max = Math.max(1024, ...rx, ...tx);
+    const step = 240 / (Math.max(n, 20) - 1);
+    const x0 = 240 - step * (n - 1);
+    const line = (vals) => vals.map((v, i) => `${(x0 + i * step).toFixed(1)},${(54 - (v / max) * 50).toFixed(1)}`).join(" ");
+    return `<svg class="netspark" viewBox="0 0 240 56" preserveAspectRatio="none" aria-hidden="true">
+      <line x1="0" y1="55" x2="240" y2="55" stroke="var(--line)" stroke-width="1"/>
+      <polyline points="${line(tx)}" fill="none" stroke="var(--net-tx)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+      <polyline points="${line(rx)}" fill="none" stroke="var(--net-rx)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+    </svg>`;
+  }
+  function pulseNote(st) {
+    if (pulseBlock?.kind === "approval") {
+      return `<span style="display:flex;flex-direction:column;gap:6px;align-items:flex-start"><span class="muted" style="font-size:12.5px">Live data (CPU, memory and network every second) needs the connector's server_pulse tool. Allow it, preferably with "Always allow".</span><button class="btn sm primary" type="button" data-act="pulse-allow">Turn on live</button></span>`;
+    }
+    const why = pulseBlock?.message || st.pulseError;
+    if (why) return `<span class="muted" style="font-size:12.5px">Live data unavailable: ${esc(why)}</span>`;
+    return `<span class="muted" style="font-size:12.5px">Starting live sampling; figures appear in a few seconds…</span>`;
+  }
+  // The viewer's click: callTool may ask for approval; once allowed, the per-second loop starts again.
+  async function allowPulse() {
+    try {
+      const p = await call("server_pulse", pulseInput(), { cache: false });
+      pulseBlock = null;
+      applyPulse(p);
+    } catch (e) {
+      pulseBlock = e.code === "approval_required" ? { kind: "approval" } : { kind: AUTHZ.has(e.code) ? "denied" : "error", message: errText(e) };
+    }
+    render();
+  }
+  // Live state in words: how late the newest figure is, or how long nothing new has come.
+  function liveFoot(st, live) {
+    if (live) return ` · ${seconds1(st.lag || 0)} behind`;
+    if (pulseBlock?.kind === "approval") return ` · <button class="btn sm primary" type="button" data-act="pulse-allow">Turn on live</button>`;
+    if (st.liveSeen) return ` · <span style="color:var(--warn)">no new data for ${seconds1(Date.now() - st.liveSeen)}${pulseBlock?.message ? " (" + esc(pulseBlock.message) + ")" : ""}</span>`;
+    return "";
+  }
+  function netCard(d, st, live, tag) {
+    const r = live ? st.rate : null;
+    const rate = (v) => (v == null ? "–" : `${bytes(v)}<small>/s</small>`);
+    return `<div class="netcard">
+      <div class="rates">
+        <span class="label">Network${tag}</span>
+        <span class="rate num"><i style="background:var(--net-rx)"></i><small>↓ Download</small>${rate(r?.rxRate)}</span>
+        <span class="rate num"><i style="background:var(--net-tx)"></i><small>↑ Upload</small>${rate(r?.txRate)}</span>
+      </div>
+      ${live || st.live.cpu.length >= 2 ? netSpark(st.live.rx, st.live.tx) : pulseNote(st)}
+      <span class="foot num">Since boot: ↓ ${bytes(d.network.rxBytes)} · ↑ ${bytes(d.network.txBytes)}${st.live.cpu.length >= 2 ? " · chart: last 5 minutes, download and upload on one scale" : ""}${liveFoot(st, live)}</span>
+    </div>`;
+  }
+
+  function overview(d, st) {
+    const live = isLive(st);
+    const hist = live ? st.live : st.history;
+    const tag = live ? `<span class="live-badge" title="Sampled every second; the chart shows the last 5 minutes"><i></i>Live</span>` : "";
+
+    const disks = (d.disks || []).map((k) => `<tr><td class="mono">${esc(k.mount)}</td><td class="mono muted">${esc(k.fs)}</td><td class="r num">${bytes(k.used)}</td><td class="r num">${bytes(k.total)}</td><td class="r"><span class="pill ${level(k.percent, 80, 92)} num">${k.percent}%</span></td></tr>`).join("");
+    const ips = (d.ips || []).map((ip) => `<span class="mono">${copyable(ip)}</span>`).join("<br>")
+      + (d.bridgeNetworks ? `<br><span class="muted" title="Gateway addresses of virtual bridges such as docker0 / br-…, used only inside this machine and not reachable from outside">plus ${d.bridgeNetworks} internal Docker networks</span>` : "");
+    return `
+      <div class="meters">
+        ${meter(`CPU${tag}`, d.cpu.percent, `${d.cpu.cores ?? "?"} cores · load ${d.load.m1} / ${d.load.m5} / ${d.load.m15}`, hist.cpu)}
+        ${meter(`Memory${tag}`, d.memory.percent, `${bytes(d.memory.used)} / ${bytes(d.memory.total)}`, hist.mem)}
+        ${meter("Disk /", d.disk?.percent, d.disk ? `${bytes(d.disk.used)} / ${bytes(d.disk.total)}` : "–")}
+        ${meter("Swap", d.swap.total ? d.swap.percent : null, d.swap.total ? `${bytes(d.swap.used)} / ${bytes(d.swap.total)}` : "Off")}
+      </div>
+      ${netCard(d, st, live, tag)}
+      <div class="grid2">
+        <div class="kv"><h3 class="label">System</h3><dl>
+          <dt>Hostname</dt><dd class="mono">${esc(d.hostname)}</dd>
+          <dt>Kernel</dt><dd class="mono">${esc(d.kernel)}</dd>
+          <dt>CPU</dt><dd>${esc(d.cpu.model || "–")}</dd>
+          <dt>Processes</dt><dd class="num">${d.processes}</dd>
+          <dt>Users logged in</dt><dd class="num">${d.usersLoggedIn}</dd>
+          <dt>Last login</dt><dd class="mono" style="font-size:12.5px">${esc(d.lastLogin || "–")}</dd>
+        </dl></div>
+        <div class="kv"><h3 class="label">Network</h3><dl>
+          <dt>IP addresses</dt><dd>${ips || "–"}</dd>
+          <dt>Received</dt><dd class="num">${bytes(d.network.rxBytes)}</dd>
+          <dt>Sent</dt><dd class="num">${bytes(d.network.txBytes)}</dd>
+          <dt>Docker</dt><dd>${dockerStatusText(d.docker)}</dd>
+        </dl></div>
+      </div>
+      ${disks ? `<div class="kv" style="margin-top:12px"><h3 class="label">Disks</h3><div class="table-wrap"><table>
+        <thead><tr><th>Mount</th><th>Device</th><th class="r">Used</th><th class="r">Size</th><th class="r">Use</th></tr></thead><tbody>${disks}</tbody></table></div></div>` : ""}`;
+  }
+
+  function dockerStatusText(dk) {
+    return {
+      ok: `${dk.running} running of ${dk.containers.length}${dk.sudo ? " (via sudo)" : ""}`,
+      not_installed: "Not installed",
+      permission_denied: "Permission denied (add the user to the docker group: sudo usermod -aG docker $USER)",
+      daemon_down: "Docker daemon not running",
+    }[dk.status] || dk.status;
+  }
+
+  function dockerPane(d) {
+    const dk = d.docker;
+    if (dk.status !== "ok") return `<div class="notice"><p>Docker: ${esc(dockerStatusText(dk))}</p></div>`;
+    if (!dk.containers.length) return `<div class="empty">No containers on this server yet.</div>`;
+    const rows = dk.containers.map((c) => {
+      const running = c.state === "running";
+      const pill = running ? "ok" : c.state === "restarting" || c.state === "paused" ? "warn" : c.state === "exited" && !/\(0\)/.test(c.status) ? "crit" : "";
+      const act = (a, label, cls = "") => {
+        const key = `${state.selected}|${c.name}:${a}`;
+        const armed = state.armed === key;
+        return `<button class="btn sm ${cls} ${armed ? "armed" : ""}" type="button" data-cact="${a}" data-c="${esc(c.name)}">${armed ? "Confirm " + label.toLowerCase() : label}</button>`;
+      };
+      return `<tr>
+        <td><span class="pill ${pill}">${esc(c.state)}</span></td>
+        <td><div class="cname">${esc(c.name)}</div><div class="cimg">${esc(c.image)}</div></td>
+        <td class="muted">${esc(c.status)}</td>
+        <td class="r num">${c.cpuPercent == null ? "–" : c.cpuPercent.toFixed(1) + "%"}</td>
+        <td class="r num">${c.memUsed == null ? "–" : bytes(c.memUsed)}</td>
+        <td class="mono muted" style="font-size:12px;max-width:220px;overflow-wrap:anywhere">${esc(c.ports || "")}</td>
+        <td><div class="row-actions">
+          <button class="btn sm" type="button" data-cact="logs" data-c="${esc(c.name)}">Logs</button>
+          ${!state.exec ? "" : running ? act("restart", "Restart", "danger") + act("stop", "Stop", "danger") : act("start", "Start")}
+        </div></td>
+      </tr>`;
+    }).join("");
+    const logs = state.logs && state.logs.server === state.selected
+      ? `<div class="logs"><div class="term-tools"><span class="label">Logs · ${esc(state.logs.container)} (last 200 lines)</span><button class="btn sm" type="button" data-act="closelogs">Close</button></div><pre data-log="${esc(state.logs.container)}">${esc(state.logs.text)}</pre></div>` : "";
+    return `<div class="table-wrap"><table>
+      <thead><tr><th>State</th><th>Container</th><th>Status</th><th class="r">CPU</th><th class="r">Memory</th><th>Ports</th><th class="r">Actions</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>${logs}`;
+  }
+
+  // ---------- console ----------
+  function termOf(id) {
+    return (state.term[id] ||= { html: [], cwd: null, history: [], hIdx: -1, busy: false, greeted: false });
+  }
+  function colorize(text) {
+    return esc(text).replace(/\b(\d{1,3}(?:\.\d{1,3}){3})\b/g, '<span class="ip">$1</span>');
+  }
+  function stripAnsi(s) {
+    return String(s).replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "").replace(/\x1b\][^\x07]*\x07/g, "").replace(/\r(?!\n)/g, "");
+  }
+  function promptParts(id) {
+    const s = state.servers.find((x) => x.id === id);
+    const d = state.stats[id]?.data;
+    // Short hostname like bash's \h, but an IP address stays whole (before the first stats, or never onboarded).
+    const name = d?.hostname || s?.host || "";
+    const host = /^\d{1,3}(\.\d{1,3}){3}$|:/.test(name) ? name : name.split(".")[0];
+    const t = termOf(id);
+    let cwd = t.cwd || "~";
+    const home = s?.username === "root" ? "/root" : `/home/${s?.username}`;
+    if (cwd === home) cwd = "~";
+    else if (cwd.startsWith(home + "/")) cwd = "~" + cwd.slice(home.length);
+    // Like bash: "#" for root, "$" for everyone else.
+    return { user: s?.username || "", host, cwd, sigil: s?.username === "root" ? "#" : "$" };
+  }
+  function promptHtml(id) {
+    const p = promptParts(id);
+    return `<span class="p">${esc(p.user)}@${esc(p.host)}</span>:<span class="path">${esc(p.cwd)}</span>${p.sigil}`;
+  }
+  function termTitle(id) {
+    const s = state.servers.find((x) => x.id === id);
+    return `${esc(s?.name || id)} <span>— ssh</span>`;
+  }
+  function termStatus(id) {
+    const s = state.servers.find((x) => x.id === id);
+    const st = state.stats[id] || {};
+    const p = promptParts(id);
+    const [cls, text] = st.error ? ["bad", "Disconnected"] : st.data ? ["ok", "Connected"] : ["", "Connecting"];
+    return `<span class="st-conn ${cls}"><i></i>${text}</span>
+      <span>${esc(s?.username)}@${esc(s?.host)}:${s?.port || 22}</span>
+      <span class="st-cwd">${esc(p.cwd)}</span>
+      ${st.data?.latencyMs != null ? `<span class="st-lat">${st.data.latencyMs} ms</span>` : ""}
+      <span class="st-keys" title="Commands run non-interactively, each on its own, for up to 60 s; the directory you cd into is remembered. Instead of full-screen programs such as vim or top, use top -bn1, cat and the like; ping sends only 4 packets.">Non-interactive · ↑↓ history · Ctrl+C stop · Ctrl+L clear</span>`;
+  }
+  // The prompt, title bar and status line follow the host name (first stats), the link and the directory (cd).
+  function refreshPrompt(id) {
+    const box = document.querySelector(`.term[data-for="${CSS.escape(id)}"]`);
+    if (!box) return;
+    box.querySelector(".prompt").innerHTML = promptHtml(id);
+    box.querySelector(".term-title").innerHTML = termTitle(id);
+    box.querySelector(".term-status").innerHTML = termStatus(id);
+  }
+  function scrollTerm(id) {
+    const body = document.querySelector(`.term[data-for="${CSS.escape(id)}"] .term-body`);
+    if (body) body.scrollTop = body.scrollHeight;
+  }
+  function print(id, html) {
+    const t = termOf(id);
+    t.html.push(html);
+    if (t.html.length > 3000) t.html.splice(0, t.html.length - 3000);
+    const out = document.querySelector(`.term[data-for="${CSS.escape(id)}"] .term-out`);
+    if (out) {
+      out.insertAdjacentHTML("beforeend", html);
+      scrollTerm(id);
+    }
+  }
+  function greet(id) {
+    const t = termOf(id);
+    const d = state.stats[id]?.data;
+    if (!d || t.greeted) return;
+    t.greeted = true;
+    const lines = [];
+    if (d.motd) lines.push(d.motd.trim() + "\n");
+    else {
+      lines.push(`Welcome to ${d.os} (${d.kernel})\n`);
+      lines.push(`\n System load:  ${d.load.m1.toFixed(2).padEnd(16)} Processes:          ${d.processes}`);
+      lines.push(`\n Usage of /:   ${(d.disk ? d.disk.percent + "% of " + bytes(d.disk.total) : "–").padEnd(16)} Users logged in:    ${d.usersLoggedIn}`);
+      lines.push(`\n Memory usage: ${(Math.round(d.memory.percent) + "%").padEnd(16)} IPv4 address:       ${d.ips?.[0] || "–"}`);
+      lines.push(`\n Swap usage:   ${d.swap.total ? Math.round(d.swap.percent) + "%" : "0%"}\n`);
+    }
+    if (d.updatesAvailable) lines.push(`\n${d.updatesAvailable} updates can be applied immediately.\n`);
+    if (d.rebootRequired && !/restart required/i.test(d.motd)) lines.push(`\n*** System restart required ***\n`);
+    if (d.lastLogin) lines.push(`${d.lastLogin}\n`);
+    print(id, colorize(lines.join("")));
+    refreshPrompt(id);
+  }
+
+  function buildTerminal(s) {
+    const t = termOf(s.id);
+    const wrap = document.createElement("div");
+    wrap.innerHTML = `
+      <div id="termNotice"></div>
+      <div class="term" data-for="${esc(s.id)}">
+        <div class="term-bar">
+          <span class="term-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="term-title">${termTitle(s.id)}</span>
+          <button type="button" data-act="clear">Clear</button>
+        </div>
+        <div class="term-body">
+          <div class="term-out" aria-live="polite"></div>
+          <form class="term-in" data-term-form>
+            <label class="prompt" for="term-input-${esc(s.id)}">${promptHtml(s.id)}</label>
+            <input id="term-input-${esc(s.id)}" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="send">
+          </form>
+        </div>
+        <div class="term-status">${termStatus(s.id)}</div>
+      </div>`;
+    if (!t.greeted) greet(s.id); // fills t.html; the node is not in the document yet
+    const out = wrap.querySelector(".term-out");
+    out.innerHTML = t.html.join("");
+    wrap.querySelector(".prompt").innerHTML = promptHtml(s.id);
+    // Rebuilt while a command is still running (tab or server switched and back): keep the input locked.
+    if (t.busy) {
+      wrap.querySelector("[data-term-form]").classList.add("busy");
+      wrap.querySelector(".term-in input").disabled = true;
+    }
+    requestAnimationFrame(() => scrollTerm(s.id));
+    return wrap;
+  }
+
+  // A command and its result as one block. Printed once as "Running" when the command is sent, and
+  // replaced in place (screen and scrollback) when the answer arrives.
+  let blockSeq = 0;
+  function blockHtml(n, head, { meta = `<span class="run">Running…</span>`, body = "", fail = false, copy = false } = {}) {
+    return `<div class="blk${fail ? " fail" : ""}" data-blk="${n}"><div class="blk-head"><span class="blk-cmd">${head}</span><span class="blk-meta">${meta}${copy ? `<button class="blk-copy" type="button" data-copy="${n}">Copy</button>` : ""}</span></div>${body ? `<div class="blk-out">${body}</div>` : ""}</div>`;
+  }
+  function replaceBlock(id, n, html) {
+    const t = termOf(id);
+    const mark = `data-blk="${n}"`;
+    const i = t.html.findLastIndex((h) => h.includes(mark));
+    // Cleared (Clear, Ctrl+L) while the command ran: its result is printed at the end instead.
+    if (i < 0) return print(id, html);
+    t.html[i] = html;
+    const el = document.querySelector(`.term[data-for="${CSS.escape(id)}"] [data-blk="${n}"]`);
+    if (el) el.outerHTML = html;
+    scrollTerm(id);
+  }
+  const seconds = (ms) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)} s`);
+
+  // Stop or Ctrl+C: the page stops waiting at once. The agent closes the channel at the timeout, which ends
+  // a command that keeps writing (ping, tail); one that stays silent keeps running until it is killed.
+  function stopCommand(id) {
+    const t = termOf(id);
+    if (!t.busy || !t.stop) return;
+    t.stopped = true;
+    t.stop.abort();
+  }
+
+  async function runCommand(id, command) {
+    const t = termOf(id);
+    const form = document.querySelector(`.term[data-for="${CSS.escape(id)}"] [data-term-form]`);
+    const head = `${promptHtml(id)} ${esc(command)}`;
+    if (!command.trim()) return print(id, `${head}\n`);
+    t.history.push(command);
+    t.hIdx = -1;
+    if (command.trim() === "clear") { t.html = []; const out = form?.parentElement.querySelector(".term-out"); if (out) out.innerHTML = ""; return; }
+    const n = ++blockSeq;
+    const plan = tame(command);
+    if (INTERACTIVE.test(command.trim()) || plan.refuse) {
+      const why = plan.refuse || "This is an interactive program, which the web terminal can't run. Try a non-interactive form instead, e.g. top -bn1 | head -20.";
+      print(id, blockHtml(n, head, { meta: `<span class="bad">✗ not run</span>`, fail: true, body: `<span class="err">${esc(why)}</span>` }));
+      return;
+    }
+    print(id, blockHtml(n, head, { meta: `<span class="run">Running…</span><button class="blk-stop" type="button" data-stop>Stop</button>` }));
+    t.stop = new AbortController();
+    t.stopped = false;
+    t.busy = true;
+    form?.classList.add("busy");
+    const input = form?.querySelector("input");
+    if (input) input.disabled = true;
+    const started = Date.now();
+    try {
+      const r = await call("run_command", { id, command: plan.run, cwd: t.cwd || undefined, timeoutSec: 60 }, { signal: t.stop.signal });
+      const text = (plan.note ? `\u0000${plan.note}\n` : "") + stripAnsi(r.output || "").replace(/\n$/, "");
+      // No exit code: the command timed out, was killed or lost its connection before it finished.
+      const code = r.exitCode ?? null;
+      const notes = r.truncated ? `${text ? "\n" : ""}<span class="dim">[output too long or timed out; truncated]</span>` : "";
+      const status = code === 0 ? `<span class="ok">✓</span>` : code === null ? `<span class="bad">✗ timed out or interrupted</span>` : `<span class="bad">✗ ${esc(code)}</span>`;
+      // A note from tame() shows dimmed above the output (marked with \u0000, which commands never print).
+      const body = colorize(text).replace(/^\u0000([^\n]*)/, '<span class="dim">[$1]</span>');
+      replaceBlock(id, n, blockHtml(n, head, { meta: `${status}<span>${seconds(Date.now() - started)}</span>`, body: body + notes, fail: code !== 0, copy: !!r.output }));
+      t.cwd = r.cwd || t.cwd;
+    } catch (e) {
+      if (t.stopped) {
+        replaceBlock(id, n, blockHtml(n, head, { meta: `<span class="bad">✗ stopped</span><span>${seconds(Date.now() - started)}</span>`, fail: true,
+          body: `<span class="dim">[The page stopped waiting. The connection closes at the 60 s timeout, which ends a command that keeps printing; a silent one may still be running: find it with ps and end it with kill.]</span>` }));
+        return;
+      }
+      const msg = e.code === "cancelled" ? "You cancelled in the confirmation prompt, so the command did not run."
+        : e.code === "server_unavailable" ? "The agent didn't respond; the command may or may not have run."
+        : errText(e);
+      replaceBlock(id, n, blockHtml(n, head, { meta: `<span class="bad">✗ error</span>`, body: `<span class="err">${esc(msg)}</span>`, fail: true }));
+    } finally {
+      t.busy = false;
+      t.stop = null;
+      const f = document.querySelector(`.term[data-for="${CSS.escape(id)}"] [data-term-form]`);
+      if (f) {
+        f.classList.remove("busy");
+        refreshPrompt(id);
+        scrollTerm(id);
+        const i = f.querySelector("input");
+        i.disabled = false;
+        i.focus();
+      }
+    }
+  }
+
+  // ---------- container actions ----------
+  async function containerAct(container, action) {
+    const id = state.selected;
+    if (action === "logs") {
+      state.logs = { server: id, container, text: "Loading…" };
+      renderDetail();
+      try {
+        const r = await call("container_logs", { id, container, tail: 200 }, { cache: false });
+        state.logs = { server: id, container, text: stripAnsi(r.output || "(no logs)") };
+      } catch (e) {
+        state.logs = { server: id, container, text: "Couldn't read logs: " + errText(e) };
+      }
+      return renderDetail();
+    }
+    const key = `${id}|${container}:${action}`;
+    if (action !== "start" && state.armed !== key) {
+      state.armed = key;
+      renderDetail();
+      setTimeout(() => { if (state.armed === key) { state.armed = null; renderDetail(); } }, 4000);
+      return;
+    }
+    state.armed = null;
+    toast(`${{ start: "Starting", stop: "Stopping", restart: "Restarting" }[action]} ${container}…`);
+    try {
+      await call("container_action", { id, container, action });
+      toast(`${container} ${{ start: "started", stop: "stopped", restart: "restarted" }[action]}`);
+    } catch (e) {
+      toast(e.code === "cancelled" ? "Cancelled; nothing was done." : `The action didn't complete: ${errText(e)}`);
+    }
+    refreshStats(id);
+  }
+
+  // ---------- server form ----------
+  function openForm(server) {
+    state.editing = server || null;
+    $("formTitle").textContent = server ? "Edit server" : "Add server";
+    $("f-name").value = server?.name || "";
+    $("f-host").value = server?.host || "";
+    $("f-port").value = server?.port || 22;
+    $("f-user").value = server?.username || "";
+    $("f-key").value = server?.keyPath || "";
+    $("f-pass").value = "";
+    $("f-pass").placeholder = server?.auth === "password" ? "Password saved; leave empty to keep it" : "Leave empty for key-only login";
+    $("f-tags").value = (server?.tags || []).join(", ");
+    $("formDelete").hidden = !server;
+    $("formDelete").classList.remove("armed");
+    $("formDelete").textContent = "Delete";
+    $("formError").hidden = true;
+    $("sheet").hidden = false;
+    $("f-name").focus();
+  }
+  function closeForm() { $("sheet").hidden = true; state.editing = null; }
+
+  $("serverForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (state.mode !== "live" && state.mode !== "demo") return showFormError("Connect the agent first.");
+    const input = {
+      name: $("f-name").value.trim(),
+      host: $("f-host").value.trim(),
+      port: Number($("f-port").value) || 22,
+      username: $("f-user").value.trim(),
+      keyPath: $("f-key").value.trim() || undefined,
+      tags: $("f-tags").value.split(/[,\uFF0C]/).map((t) => t.trim()).filter(Boolean),
+    };
+    const pass = $("f-pass").value;
+    if (pass) input.password = pass;
+    $("formSubmit").disabled = true;
+    try {
+      let saved;
+      if (state.editing) {
+        if (!input.keyPath && state.editing.keyPath) input.keyPath = "";
+        saved = await call("update_server", { id: state.editing.id, ...input });
+      } else {
+        saved = await call("add_server", input);
+      }
+      closeForm();
+      select(saved.id);
+      toast(`Saved ${saved.name}`);
+      await loadServers();
+      invalidateCloudMatches();
+      refreshStats(saved.id);
+    } catch (e) {
+      showFormError(e.code === "cancelled" ? "You cancelled the confirmation, so nothing was saved." : errText(e));
+    } finally {
+      $("formSubmit").disabled = false;
+    }
+  });
+  function showFormError(msg) { const el = $("formError"); el.textContent = msg; el.style.color = "var(--crit)"; el.hidden = false; }
+  $("formCancel").addEventListener("click", closeForm);
+  $("sheet").addEventListener("click", (e) => { if (e.target === $("sheet")) closeForm(); });
+  $("formDelete").addEventListener("click", async () => {
+    const b = $("formDelete");
+    if (!b.classList.contains("armed")) { b.classList.add("armed"); b.textContent = "Confirm delete"; return; }
+    try {
+      await call("remove_server", { id: state.editing.id });
+      toast(`Deleted ${state.editing.name}`);
+      closeForm();
+      await loadServers();
+      invalidateCloudMatches();
+    } catch (e) {
+      showFormError(errText(e));
+    }
+  });
+
+  // ---------- events ----------
+  $("addBtn").addEventListener("click", () => {
+    if (state.mode === "setup" || state.mode === "loading") { toast("Connect the agent first, using the steps on this page."); return; }
+    openForm(null);
+  });
+  $("hostList").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-host]");
+    if (!b) return;
+    select(b.dataset.host);
+    render();
+  });
+  $("detail").addEventListener("click", (e) => {
+    const tab = e.target.closest("[data-tab]");
+    if (tab) { state.tab = tab.dataset.tab; renderDetail(); if (state.tab === "terminal") document.querySelector(".term input")?.focus(); return; }
+    const c = e.target.closest("[data-cact]");
+    if (c) return containerAct(c.dataset.c, c.dataset.cact);
+    if (e.target.closest("[data-stop]")) return stopCommand(state.selected);
+    const cp = e.target.closest("[data-copy]");
+    if (cp) return copyBlock(cp);
+    const a = e.target.closest("[data-act]");
+    if (!a) {
+      if (e.target.closest(".term") && !window.getSelection()?.toString()) document.querySelector(".term input")?.focus();
+      return;
+    }
+    const act = a.dataset.act;
+    if (act === "refresh" || act === "approve") refreshStats(state.selected);
+    if (act === "edit") openForm(state.servers.find((s) => s.id === state.selected));
+    if (act === "retry") { state.mode = "loading"; render(); boot(); }
+    if (act === "demo") enterDemo();
+    if (act === "closelogs") { state.logs = null; renderDetail(); }
+    if (act === "pulse-allow") allowPulse();
+    if (act === "clear") { const t = termOf(state.selected); t.html = []; document.querySelector(".term-out").innerHTML = ""; }
+  });
+  document.addEventListener("click", (e) => {
+    const v = e.target.closest("[data-view]");
+    if (v) setView(v.dataset.view);
+    if (e.target.closest("[data-containers]")) showContainers();
+    const cp = e.target.closest("[data-copy-text]");
+    if (cp) copyText(cp);
+  });
+  // Clipboard API first; inside the artifact frame it can be blocked, then a hidden textarea and execCommand.
+  async function copyText(btn) {
+    const text = btn.dataset.copyText;
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { ok = document.execCommand("copy"); } catch {}
+      ta.remove();
+    }
+    toast(ok ? `Copied ${text}` : `Couldn't copy; select it by hand: ${text}`);
+    if (ok) { btn.classList.add("done"); setTimeout(() => btn.classList.remove("done"), 1200); }
+  }
+  // The Containers chip: the Containers tab of a host that has containers; pressed again on that tab, the next such host.
+  function showContainers() {
+    const hosts = state.servers.filter((s) => state.stats[s.id]?.data?.docker?.containers?.length);
+    if (!hosts.length) return;
+    const i = hosts.findIndex((s) => s.id === state.selected);
+    const next = i < 0 ? hosts[0] : state.view === "hosts" && state.tab === "docker" ? hosts[(i + 1) % hosts.length] : hosts[i];
+    select(next.id);
+    state.tab = "docker";
+    if (state.view !== "hosts") { state.view = "hosts"; try { location.hash = ""; } catch {} }
+    render();
+    // One column (phones): bring the host list and the detail under the sticky bar, the chosen card in view.
+    if (window.matchMedia?.("(max-width: 820px)").matches) {
+      const shell = document.querySelector(".shell");
+      const top = shell.getBoundingClientRect().top + window.scrollY - document.querySelector(".bar").offsetHeight;
+      window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    }
+    const list = $("hostList"), card = list.querySelector('.host[aria-current="true"]');
+    if (card) list.scrollLeft += card.getBoundingClientRect().left - list.getBoundingClientRect().left - 16;
+  }
+  window.addEventListener("hashchange", () => {
+    const view = location.hash === "#cloud" ? "cloud" : "hosts";
+    if (view !== state.view) { state.view = view; render(); }
+  });
+  $("cloud").addEventListener("click", (e) => {
+    const go = e.target.closest("[data-goto]");
+    if (go) { select(go.dataset.goto); state.tab = "overview"; state.logs = null; return setView("hosts"); }
+    const a = e.target.closest("[data-act]");
+    if (!a) return;
+    const act = a.dataset.act;
+    if (act === "cloud-refresh") refreshCloud(a.dataset.tool);
+    if (act === "cloud-approve") refreshCloud(a.dataset.tool, true);
+    if (act === "cloud-retry") { state.cloud.status = "idle"; loadCloud(); }
+    if (act === "retry") { state.mode = "loading"; render(); boot(); }
+    if (act === "demo") enterDemo();
+  });
+  $("detail").addEventListener("submit", (e) => {
+    const f = e.target.closest("[data-term-form]");
+    if (!f) return;
+    e.preventDefault();
+    const input = f.querySelector("input");
+    const id = f.closest(".term").dataset.for;
+    if (termOf(id).busy) return;
+    const cmd = input.value;
+    input.value = "";
+    runCommand(id, cmd);
+  });
+  $("detail").addEventListener("keydown", (e) => {
+    if (!e.target.matches(".term-in input")) return;
+    const t = termOf(e.target.closest(".term").dataset.for);
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      if (!t.history.length) return;
+      e.preventDefault();
+      if (e.key === "ArrowUp") t.hIdx = t.hIdx < 0 ? t.history.length - 1 : Math.max(0, t.hIdx - 1);
+      else t.hIdx = t.hIdx < 0 ? -1 : t.hIdx + 1 >= t.history.length ? -1 : t.hIdx + 1;
+      e.target.value = t.hIdx < 0 ? "" : t.history[t.hIdx];
+    } else if (e.key === "l" && e.ctrlKey) {
+      e.preventDefault();
+      t.html = [];
+      e.target.closest(".term").querySelector(".term-out").innerHTML = "";
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("sheet").hidden) closeForm();
+    // Ctrl+C while a command runs in the open terminal (with nothing selected, so copying still works).
+    if (e.key === "c" && e.ctrlKey && !e.metaKey && state.tab === "terminal" && termOf(state.selected).busy && !window.getSelection()?.toString()) {
+      e.preventDefault();
+      stopCommand(state.selected);
+    }
+  });
+
+  // Copies one command's output. The clipboard API can be blocked inside the artifact frame: then the
+  // output is selected, so Ctrl+C / ⌘C copies it.
+  async function copyBlock(btn) {
+    const out = btn.closest(".blk")?.querySelector(".blk-out");
+    if (!out) return;
+    try {
+      await navigator.clipboard.writeText(out.innerText);
+      btn.textContent = "Copied";
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents(out);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      btn.textContent = "Selected";
+    }
+    setTimeout(() => { if (btn.isConnected) btn.textContent = "Copy"; }, 1600);
+  }
+
+  let toastTimer;
+  function toast(msg) {
+    const el = $("toast");
+    el.textContent = msg;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (el.hidden = true), 3200);
+  }
+  // Keep "updated N seconds ago" honest; the example servers refresh on the same beat as live ones.
+  setInterval(() => renderDetail(true), 15000);
+  setInterval(() => { if (!document.hidden) refreshServerList(); }, LIST_POLL_MS);
+  document.addEventListener("visibilitychange", () => {
+    watchPulse();
+    if (!document.hidden) refreshServerList();
+  });
+  setInterval(() => { if (state.mode === "demo") state.servers.forEach((s) => refreshStats(s.id)); }, POLL_MS);
+
+  // ---------- example data (shown only when the viewer chooses "View example") ----------
+  const Demo = (() => {
+    const GiB = 1024 ** 3, MiB = 1024 ** 2;
+    const servers = [
+      { id: "demo-web", name: "web-01", host: "203.0.113.10", port: 22, username: "ubuntu", tags: ["example", "prod"], source: "local", auth: "key", keyPath: "~/.ssh/web.pem" },
+      { id: "demo-db", name: "db-01", host: "203.0.113.20", port: 22, username: "ubuntu", tags: ["example"], source: "local", auth: "key" },
+      { id: "demo-ci", name: "ci-runner", host: "198.51.100.7", port: 2222, username: "deploy", tags: ["example"], source: "ssh_config", auth: "agent/default keys" },
+    ];
+    const base = {
+      "demo-web": { cpu: 23, mem: 61, disk: 46, cores: 2, memTotal: 7.6 * GiB, diskTotal: 30 * GiB, os: "Ubuntu 22.04.5 LTS", host: "ip-10-0-1-15", ip: "10.0.1.15", reboot: true, updates: 39,
+        containers: [["web", "nginx:1.27", "running", "Up 3 days", 0.4, 18 * MiB, "0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp"], ["api", "ghcr.io/example/api:2.4.1", "running", "Up 3 days", 6.2, 412 * MiB, "127.0.0.1:8080->8080/tcp"], ["redis", "redis:7.4-alpine", "running", "Up 9 days", 0.3, 9 * MiB, "6379/tcp"], ["migrate", "ghcr.io/example/api:2.4.1", "exited", "Exited (0) 3 days ago", null, null, ""]] },
+      "demo-db": { cpu: 71, mem: 88, disk: 83, cores: 4, memTotal: 15.5 * GiB, diskTotal: 200 * GiB, os: "Debian GNU/Linux 12 (bookworm)", host: "db-01", ip: "10.0.2.4", reboot: false, updates: 0,
+        containers: [["postgres", "postgres:16", "running", "Up 21 days", 64.1, 9.8 * GiB, "127.0.0.1:5432->5432/tcp"], ["pgbackup", "prodrigestivill/postgres-backup-local:16", "restarting", "Restarting (1) 12 seconds ago", null, null, ""]] },
+      "demo-ci": { cpu: 4, mem: 22, disk: 37, cores: 8, memTotal: 31.3 * GiB, diskTotal: 500 * GiB, os: "Ubuntu 24.04.1 LTS", host: "ci-runner", ip: "10.0.3.9", reboot: false, updates: 4, containers: [] },
+    };
+    const jitter = (v, r) => Math.max(0, Math.min(100, v + (Math.random() - 0.5) * r));
+    function stats(id) {
+      const b = base[id];
+      const cpu = Math.round(jitter(b.cpu, 10) * 10) / 10;
+      const mem = Math.round(jitter(b.mem, 3) * 10) / 10;
+      return {
+        serverId: id, collectedAt: new Date().toISOString(), latencyMs: 40 + Math.round(Math.random() * 60),
+        hostname: b.host, os: b.os, kernel: "Linux 6.8.0-1040-aws x86_64",
+        cpu: { cores: b.cores, model: "Intel(R) Xeon(R) Platinum 8259CL CPU @ 2.50GHz", percent: cpu },
+        load: { m1: +(cpu / 100 * b.cores).toFixed(2), m5: +(b.cpu / 100 * b.cores).toFixed(2), m15: +(b.cpu / 110 * b.cores).toFixed(2) },
+        uptimeSec: 86400 * 12 + 3600 * 5,
+        memory: { total: b.memTotal, used: b.memTotal * mem / 100, percent: mem },
+        swap: { total: 0, used: 0, percent: 0 },
+        disk: { mount: "/", fs: "/dev/root", total: b.diskTotal, used: b.diskTotal * b.disk / 100, percent: b.disk },
+        disks: [{ mount: "/", fs: "/dev/root", total: b.diskTotal, used: b.diskTotal * b.disk / 100, percent: b.disk }],
+        network: { rxBytes: 182.4 * GiB, txBytes: 96.1 * GiB }, ips: [b.ip, "172.17.0.1"],
+        usersLoggedIn: 0, processes: 105 + Math.round(Math.random() * 20), rebootRequired: b.reboot, updatesAvailable: b.updates,
+        motd: "", lastLogin: "",
+        docker: {
+          status: "ok", sudo: false,
+          running: b.containers.filter((c) => c[2] === "running").length,
+          containers: b.containers.map(([name, image, st, status, cpuP, memU, ports]) => ({ id: name, name, image, state: st, status, cpuPercent: cpuP, memUsed: memU, ports })),
+        },
+      };
+    }
+    const replies = {
+      "whoami": (s) => s.username,
+      "uptime": () => " 15:28:51 up 12 days,  5:00,  0 users,  load average: 0.02, 0.05, 0.01",
+      "uname -a": () => "Linux ip-10-0-1-15 6.8.0-1040-aws #42~22.04.1-Ubuntu SMP x86_64 GNU/Linux",
+      "free -h": () => "               total        used        free      shared  buff/cache   available\nMem:           7.6Gi       4.6Gi       0.9Gi        12Mi       2.1Gi       3.0Gi\nSwap:             0B          0B          0B",
+      "df -h /": () => "Filesystem      Size  Used Avail Use% Mounted on\n/dev/root        30G   14G   16G  46% /",
+      "docker ps": () => "CONTAINER ID   IMAGE              STATUS       NAMES\n3f2a91c0d1e4   nginx:1.27         Up 3 days    web\n9b77e0f2a3c1   redis:7.4-alpine   Up 9 days    redis",
+      "ls": () => "app  backups  docker-compose.yml",
+    };
+    // Cloud examples use documentation IP ranges; the first two match the example hosts above.
+    const web = { id: "demo-web", name: "web-01" }, db = { id: "demo-db", name: "db-01" };
+    const cloud = {
+      cloud_providers: { providers: [
+        { id: "aws", name: "AWS", configured: true, regions: ["ap-northeast-1", "us-west-2"], tools: ["aws_instances", "aws_cost"] },
+        { id: "netcup", name: "netcup", configured: true, tools: ["netcup_servers"] },
+      ] },
+      aws_instances: {
+        regions: [{ region: "ap-northeast-1", count: 3, error: null, lightsailError: null }, { region: "us-west-2", count: 1, error: null, lightsailError: null }],
+        cpu: { status: "ok", error: null },
+        instances: [
+          { id: "i-0a1b2c3d4e5f60718", name: "web-01", region: "ap-northeast-1", zone: "ap-northeast-1a", state: "running", type: "t3.small", publicIp: "203.0.113.10", privateIp: "10.0.1.15", launchTime: "2026-09-14T03:21:07.000Z", cpuPercent: 21.4, server: web },
+          { id: "i-0b2c3d4e5f6071829", name: "batch-worker", region: "ap-northeast-1", zone: "ap-northeast-1c", state: "stopped", type: "c7g.large", publicIp: null, privateIp: "10.0.1.42", launchTime: "2026-10-01T11:02:44.000Z", cpuPercent: null, server: null },
+          { id: "i-0c3d4e5f607182930", name: "staging", region: "us-west-2", zone: "us-west-2b", state: "running", type: "t4g.medium", publicIp: "198.51.100.40", privateIp: "10.1.0.8", launchTime: "2026-10-20T08:15:00.000Z", cpuPercent: 3.2, server: null },
+          { id: "blog-tokyo", service: "lightsail", name: "blog-tokyo", region: "ap-northeast-1", zone: "ap-northeast-1a", state: "running", type: "small_3_0", publicIp: "198.51.100.60", privateIp: "172.26.3.14", launchTime: "2026-08-30T02:40:00.000Z", cpuPercent: null, server: null },
+        ],
+      },
+      aws_cost: { start: "2026-10-01", end: "2026-10-29", monthToDate: true, currency: "USD", total: 41.27, estimated: true, services: [
+        { service: "Amazon Elastic Compute Cloud - Compute", amount: 28.62, unit: "USD" }, { service: "EC2 - Other", amount: 6.1, unit: "USD" },
+        { service: "Amazon Simple Storage Service", amount: 2.94, unit: "USD" }, { service: "Tax", amount: 3.61, unit: "USD" },
+      ] },
+      netcup_servers: { servers: [
+        { id: 412345, name: "v2202610123456789012", nickname: "db-01", hostname: "v2202610123456789012.bestsrv.de", state: "RUNNING", disabled: false, site: "Nuremberg", product: "RS 2000 G12", cpuCount: 8, memoryMiB: 16384, diskMiB: 524288, uptimeSec: 86400 * 21 + 3600 * 4, ipv4: ["203.0.113.20"], ipv6: ["2001:db8:1a2b::/64"], server: db, error: null },
+        { id: 412346, name: "v2202610123456789013", nickname: "mail", hostname: "v2202610123456789013.quicksrv.de", state: "SHUTOFF", disabled: false, site: "Vienna", product: "VPS 1000 G12", cpuCount: 4, memoryMiB: 8192, diskMiB: 262144, uptimeSec: 0, ipv4: ["198.51.100.30"], ipv6: [], server: null, error: null },
+      ] },
+    };
+    async function callDemo(tool, input) {
+      await new Promise((r) => setTimeout(r, 250 + Math.random() * 250));
+      if (tool === "list_servers") return { servers };
+      if (tool === "server_stats") return stats(input.id);
+      if (tool === "server_pulse") {
+        const servers = {};
+        for (const id of input.ids || [input.id]) {
+          const x = stats(id);
+          const sample = { t: x.collectedAt, cpu: { percent: x.cpu.percent }, load: x.load, memory: x.memory, swap: x.swap,
+            net: { rxRate: Math.round(40000 + Math.random() * 600000), txRate: Math.round(20000 + Math.random() * 200000) } };
+          servers[id] = { latest: sample, samples: [sample], error: null, running: true };
+        }
+        return { collectedAt: new Date().toISOString(), servers };
+      }
+      if (tool === "run_command") {
+        const s = servers.find((x) => x.id === input.id);
+        const cmd = input.command.trim();
+        if (cmd.startsWith("cd ")) return { output: "", exitCode: 0, cwd: cmd.slice(3).trim().replace(/^~/, "/home/" + s.username) };
+        const r = replies[cmd];
+        return { output: r ? r(s) + "\n" : `The example only replays a few common commands (whoami, uptime, free -h, df -h /, docker ps, ls). Once the agent is connected, commands run on the real server.\n`, exitCode: r ? 0 : 127, cwd: input.cwd || null };
+      }
+      if (tool === "container_logs") return { output: `2026-10-28T15:20:01Z ${input.container} | example log: connect the agent to see real logs\n2026-10-28T15:20:05Z ${input.container} | GET /healthz 200 1.2ms` };
+      if (tool === "container_action") return { done: true };
+      if (tool in cloud) return typeof cloud[tool] === "function" ? cloud[tool](input) : { ...cloud[tool], collectedAt: new Date().toISOString() };
+      throw Object.assign(new Error("The server list can't be changed in the example. Connect the agent to add servers."), { code: "tool_error" });
+    }
+    return { servers: () => servers.map((s) => ({ ...s })), call: callDemo };
+  })();
+
+  // ---------- boot ----------
+  // Also what "Reconnect" runs: without the mcp runtime there is nothing to call, so it stays on the setup copy.
+  async function boot() {
+    let mcp = state.mcp;
+    try {
+      mcp ||= await (window.claude?.use ? window.claude.use("mcp") : null);
+    } catch {
+      mcp = null;
+    }
+    if (!mcp) return enterSetup(setupCopy("not_granted"), true);
+    state.mcp = mcp;
+    await loadServers();
+  }
+  render();
+  boot();
+})();
+</script>

@@ -1,0 +1,6 @@
+{
+  "name": "orrery-digitalocean",
+  "private": true,
+  "description": "DigitalOcean Droplets and control tools for Orrery (no dependencies)",
+  "type": "module"
+}

@@ -1,0 +1,63 @@
+{
+  "id": 412345,
+  "name": "v2202610123456789012",
+  "hostname": "v2202610123456789012.bestsrv.de",
+  "nickname": "netcup-nbg",
+  "disabled": false,
+  "template": { "id": 117, "name": "VPS 1000 G12" },
+  "serverLiveInfo": {
+    "state": "RUNNING",
+    "autostart": true,
+    "uefi": false,
+    "interfaces": [
+      {
+        "mac": "aa:bb:cc:00:00:01",
+        "driver": "virtio",
+        "mtu": 1500,
+        "speedInMBits": 2500,
+        "rxMonthlyInMiB": 10240,
+        "txMonthlyInMiB": 2048,
+        "ipv4Addresses": ["198.51.100.20", "198.51.100.21"],
+        "ipv6LinkLocalAddresses": ["fe80::a8bb:ccff:fe00:1"],
+        "ipv6NetworkPrefixes": ["2001:db8:1a2b::/64"],
+        "trafficThrottled": false,
+        "vlanInterface": false,
+        "vlanId": null
+      }
+    ],
+    "disks": [
+      { "dev": "vda", "driver": "virtio", "capacityInMiB": 262144, "allocationInMiB": 81920 }
+    ],
+    "bootorder": ["HDD"],
+    "requiredStorageOptimization": "NO",
+    "template": "VPS 1000 G12",
+    "uptimeInSeconds": 1036800,
+    "currentServerMemoryInMiB": 8192,
+    "maxServerMemoryInMiB": 8192,
+    "cpuCount": 4,
+    "cpuMaxCount": 4,
+    "sockets": 1,
+    "coresPerSocket": 4,
+    "latestQemu": true,
+    "configChanged": false,
+    "osOptimization": "LINUX",
+    "nestedGuest": false,
+    "machineType": "pc-q35",
+    "keyboardLayout": "de",
+    "cloudinitAttached": false
+  },
+  "ipv4Addresses": [
+    { "id": 99001, "ip": "198.51.100.20", "netmask": "255.255.252.0", "gateway": "198.51.100.1", "broadcast": "198.51.103.255" }
+  ],
+  "ipv6Addresses": [
+    { "id": 99002, "networkPrefix": "2001:db8:1a2b::", "networkPrefixLength": 64, "gateway": "fe80::1" }
+  ],
+  "site": { "id": 2, "city": "Nuremberg" },
+  "snapshotCount": 1,
+  "maxCpuCount": 4,
+  "disksAvailableSpaceInMiB": 180224,
+  "rescueSystemActive": false,
+  "snapshotAllowed": true,
+  "architecture": "AMD64",
+  "gpuDriverAvailable": false
+}

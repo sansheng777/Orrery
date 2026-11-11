@@ -1,0 +1,5 @@
+{
+  "accessKeys": [
+    { "accessKeyId": "AKIAEXAMPLEBUCKET01", "secretAccessKey": "bucket-secret-value", "status": "Active", "createdAt": 1788000000.0 }
+  ]
+}

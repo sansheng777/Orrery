@@ -1,0 +1,13 @@
+{
+  "name": "orrery-aws",
+  "private": true,
+  "description": "AWS views and controls for Orrery (official AWS SDK for JavaScript v3)",
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-cloudwatch": "3.1152.0",
+    "@aws-sdk/client-cost-explorer": "3.1152.0",
+    "@aws-sdk/client-ec2": "3.1152.0",
+    "@aws-sdk/client-ec2-instance-connect": "3.1152.0",
+    "@aws-sdk/client-lightsail": "3.1152.0"
+  }
+}

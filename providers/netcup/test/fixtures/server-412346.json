@@ -1,0 +1,27 @@
+{
+  "id": 412346,
+  "name": "v2202610123456789013",
+  "hostname": "v2202610123456789013.quicksrv.de",
+  "nickname": null,
+  "disabled": false,
+  "template": { "id": 118, "name": "RS 2000 G12" },
+  "serverLiveInfo": {
+    "state": "SHUTOFF",
+    "autostart": false,
+    "interfaces": [],
+    "disks": [{ "dev": "vda", "driver": "virtio", "capacityInMiB": 524288, "allocationInMiB": 0 }],
+    "uptimeInSeconds": 0,
+    "currentServerMemoryInMiB": 0,
+    "maxServerMemoryInMiB": 16384,
+    "cpuCount": 8,
+    "configChanged": true
+  },
+  "ipv4Addresses": [
+    { "id": 99003, "ip": "198.51.100.30", "netmask": "255.255.252.0", "gateway": "198.51.100.1", "broadcast": "198.51.103.255" }
+  ],
+  "ipv6Addresses": [],
+  "site": { "id": 3, "city": "Vienna" },
+  "snapshotCount": 0,
+  "rescueSystemActive": false,
+  "architecture": "AMD64"
+}

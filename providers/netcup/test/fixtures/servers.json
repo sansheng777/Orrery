@@ -1,0 +1,26 @@
+[
+  {
+    "id": 412345,
+    "name": "v2202610123456789012",
+    "hostname": "v2202610123456789012.bestsrv.de",
+    "nickname": "netcup-nbg",
+    "disabled": false,
+    "template": { "id": 117, "name": "VPS 1000 G12" }
+  },
+  {
+    "id": 412346,
+    "name": "v2202610123456789013",
+    "hostname": "v2202610123456789013.quicksrv.de",
+    "nickname": null,
+    "disabled": false,
+    "template": { "id": 118, "name": "RS 2000 G12" }
+  },
+  {
+    "id": 412347,
+    "name": "v2202610123456789014",
+    "hostname": "v2202610123456789014.luckysrv.de",
+    "nickname": "old-mail",
+    "disabled": true,
+    "template": { "id": 117, "name": "VPS 1000 G12" }
+  }
+]

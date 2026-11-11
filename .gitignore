@@ -1,0 +1,16 @@
+node_modules/
+.DS_Store
+*.log
+
+# Secrets and runtime data: these live only on the machine that runs the agent.
+deploy/data/
+.orrery/
+.env
+.env.*
+*.pem
+*.key
+id_rsa*
+id_ecdsa*
+id_ed25519*
+*credentials*
+*.tfstate*

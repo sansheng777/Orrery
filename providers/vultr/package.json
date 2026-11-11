@@ -1,0 +1,6 @@
+{
+  "name": "orrery-vultr",
+  "private": true,
+  "description": "Vultr instances and control tools for Orrery (no dependencies)",
+  "type": "module"
+}

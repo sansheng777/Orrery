@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Response><Errors><Error><Code>UnauthorizedOperation</Code><Message>You are not authorized to perform this operation. User: arn:aws:iam::123456789012:user/orrery is not authorized to perform: ec2:DescribeInstances because no identity-based policy allows the ec2:DescribeInstances action</Message></Error></Errors><RequestID>7a62c49f-347e-4fc4-9331-example</RequestID></Response>

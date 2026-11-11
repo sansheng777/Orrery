@@ -1,0 +1,19 @@
+{
+  "database": {
+    "id": "9cc10173-e9ea-4176-9dbc-a4cee4c4ff30",
+    "name": "backend",
+    "engine": "pg",
+    "version": "16",
+    "connection": { "protocol": "postgresql", "uri": "postgresql://doadmin:AVNS_wm1Fk3x@backend-do-user-1.db.ondigitalocean.com:25060/defaultdb?sslmode=require", "database": "defaultdb", "host": "backend-do-user-1.db.ondigitalocean.com", "port": 25060, "user": "doadmin", "password": "AVNS_wm1Fk3x", "ssl": true },
+    "private_connection": { "uri": "postgresql://doadmin:AVNS_wm1Fk3x@private-backend-do-user-1.db.ondigitalocean.com:25060/defaultdb?sslmode=require", "host": "private-backend-do-user-1.db.ondigitalocean.com", "port": 25060, "user": "doadmin", "password": "AVNS_wm1Fk3x", "ssl": true },
+    "users": [
+      { "name": "doadmin", "role": "primary", "password": "AVNS_wm1Fk3x" },
+      { "name": "kafka-app", "role": "normal", "password": "AVNS_k4fk4", "access_cert": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----", "access_key": "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----" }
+    ],
+    "db_names": ["defaultdb"],
+    "num_nodes": 1,
+    "region": "sgp1",
+    "status": "online",
+    "tags": ["prod"]
+  }
+}

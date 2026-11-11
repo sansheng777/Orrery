@@ -1,0 +1,11 @@
+{
+  "uuid": "4f8a1c2e-7b3d-4e5f-9a0b-1c2d3e4f5a6b",
+  "name": "Server state change",
+  "state": "RUNNING",
+  "startedAt": "2026-10-29T03:40:00Z",
+  "executingUser": { "id": 50123, "username": "123456", "firstname": "Example", "lastname": "User", "email": "user@example.com" },
+  "taskProgress": { "expectedFinishedAt": "2026-10-29T03:41:00Z", "progressInPercent": 0.0 },
+  "message": null,
+  "onRollback": false,
+  "steps": []
+}

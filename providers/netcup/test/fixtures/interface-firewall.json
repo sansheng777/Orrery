@@ -1,0 +1,6 @@
+{
+  "copiedPolicies": [],
+  "userPolicies": [{ "id": 501, "name": "middle-server", "description": "", "rules": [] }],
+  "active": true,
+  "consistent": true
+}

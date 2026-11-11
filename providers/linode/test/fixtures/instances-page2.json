@@ -1,0 +1,24 @@
+{
+  "data": [
+    {
+      "id": 61234999,
+      "label": "fra-db",
+      "group": "",
+      "status": "offline",
+      "created": "2025-12-20T19:40:01",
+      "updated": "2026-10-20T11:31:52",
+      "type": "g6-standard-2",
+      "ipv4": ["198.51.100.20"],
+      "ipv6": "2a01:7e01::f03c:94ff:fe65:4321/128",
+      "image": "linode/ubuntu24.04",
+      "region": "eu-central",
+      "specs": { "disk": 81920, "memory": 4096, "vcpus": 2, "gpus": 0, "transfer": 4000 },
+      "backups": { "enabled": true, "available": true },
+      "hypervisor": "kvm",
+      "tags": []
+    }
+  ],
+  "page": 2,
+  "pages": 2,
+  "results": 2
+}

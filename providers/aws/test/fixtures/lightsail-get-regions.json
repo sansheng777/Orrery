@@ -1,0 +1,4 @@
+{ "regions": [
+  { "continentCode": "NA", "description": "This region is recommended to serve users in the eastern United States", "displayName": "Virginia", "name": "us-east-1", "availabilityZones": [], "relationalDatabaseAvailabilityZones": [] },
+  { "continentCode": "AP", "description": "This region is recommended to serve users in Japan", "displayName": "Tokyo", "name": "ap-northeast-1", "availabilityZones": [], "relationalDatabaseAvailabilityZones": [] }
+] }

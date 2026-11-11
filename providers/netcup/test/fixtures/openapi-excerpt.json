@@ -1,0 +1,41 @@
+{
+  "openapi": "3.0.1",
+  "info": { "title": "SCP (Server Control Panel) REST API", "version": "2026.0728.082537" },
+  "servers": [{ "url": "/scp-core" }],
+  "paths": {
+    "/api/v1/openapi": { "get": { "summary": "Get openapi spec" } },
+    "/api/v1/servers/{serverId}": {
+      "get": { "summary": "Get one server" },
+      "patch": {
+        "summary": "Start - stop server or update attributes like hostname, nickname, uefi, bootorder, ...",
+        "requestBody": { "required": true, "content": { "application/merge-patch+json": { "schema": { "type": "object" } } } }
+      }
+    },
+    "/api/v1/servers/{serverId}/snapshots": {
+      "get": { "summary": "Get all snapshots of a server." },
+      "post": { "summary": "Create a snapshot", "requestBody": { "content": { "application/json": { "schema": { "type": "object" } } } } }
+    },
+    "/api/v1/servers/{serverId}/image": {
+      "post": { "summary": "Setup image for a server. Attention: All data will be lost during formatting on selected disk!", "requestBody": { "content": { "application/json": { "schema": { "type": "object" } } } } }
+    },
+    "/api/v1/servers/{serverId}/rescuesystem": {
+      "get": { "summary": "Get rescue system status for a server." },
+      "post": { "summary": "Activate rescue system for a server." },
+      "delete": { "summary": "Deactivate rescue system for a server." }
+    },
+    "/api/v1/users/{userId}/firewall-policies": {
+      "get": { "summary": "Get firewall policies" },
+      "post": { "summary": "Create firewall policy", "requestBody": { "content": { "application/json": { "schema": { "type": "object" } } } } }
+    },
+    "/api/v1/users/{userId}/firewall-policies/{firewallPolicyId}": {
+      "get": { "summary": "Get firewall policy" },
+      "put": { "summary": "Update firewall policy", "requestBody": { "content": { "application/json": { "schema": { "type": "object" } } } } },
+      "delete": { "summary": "Delete firewall policy" }
+    },
+    "/api/v1/servers/{serverId}/interfaces/{mac}/firewall": {
+      "get": { "summary": "Get firewall for a server interface" },
+      "put": { "summary": "Update firewall for a server interface", "requestBody": { "content": { "application/json": { "schema": { "type": "object" } } } } }
+    },
+    "/api/v1/tasks": { "get": { "summary": "Get all tasks" } }
+  }
+}

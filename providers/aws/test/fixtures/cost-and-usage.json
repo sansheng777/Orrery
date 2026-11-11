@@ -1,0 +1,17 @@
+{
+  "GroupDefinitions": [{ "Type": "DIMENSION", "Key": "SERVICE" }],
+  "ResultsByTime": [
+    {
+      "TimePeriod": { "Start": "2026-10-01", "End": "2026-10-29" },
+      "Total": {},
+      "Groups": [
+        { "Keys": ["Amazon Elastic Compute Cloud - Compute"], "Metrics": { "UnblendedCost": { "Amount": "11.2045883421", "Unit": "USD" } } },
+        { "Keys": ["EC2 - Other"], "Metrics": { "UnblendedCost": { "Amount": "2.4012", "Unit": "USD" } } },
+        { "Keys": ["Amazon CloudWatch"], "Metrics": { "UnblendedCost": { "Amount": "0.0000318", "Unit": "USD" } } },
+        { "Keys": ["Tax"], "Metrics": { "UnblendedCost": { "Amount": "1.36", "Unit": "USD" } } }
+      ],
+      "Estimated": true
+    }
+  ],
+  "DimensionValueAttributes": []
+}

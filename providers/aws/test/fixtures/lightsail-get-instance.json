@@ -1,0 +1,16 @@
+{
+  "instance": {
+    "name": "blog-tokyo",
+    "arn": "arn:aws:lightsail:ap-northeast-1:123456789012:Instance/7f3c1e2a-0000-4000-8000-000000000001",
+    "createdAt": 1788000000.0,
+    "location": { "availabilityZone": "ap-northeast-1a", "regionName": "ap-northeast-1" },
+    "resourceType": "Instance",
+    "blueprintName": "Ubuntu",
+    "bundleId": "small_3_0",
+    "isStaticIp": true,
+    "privateIpAddress": "172.26.3.14",
+    "publicIpAddress": "203.0.113.50",
+    "ipv6Addresses": ["2001:db8:aa::50"],
+    "state": { "code": 16, "name": "running" }
+  }
+}

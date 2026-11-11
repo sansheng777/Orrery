@@ -1,0 +1,6 @@
+{
+  "name": "orrery-aliyun",
+  "private": true,
+  "description": "Alibaba Cloud (Aliyun) ECS instances, control tools and read-only billing for Orrery (no dependencies)",
+  "type": "module"
+}

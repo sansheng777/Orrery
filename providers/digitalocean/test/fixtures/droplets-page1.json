@@ -1,0 +1,33 @@
+{
+  "droplets": [
+    {
+      "id": 412345678,
+      "name": "sgp-proxy",
+      "memory": 512,
+      "vcpus": 1,
+      "disk": 10,
+      "locked": false,
+      "status": "active",
+      "created_at": "2026-05-12T03:10:22Z",
+      "features": ["monitoring", "ipv6"],
+      "backup_ids": [],
+      "snapshot_ids": [],
+      "image": { "id": 160000001, "name": "12 x64", "distribution": "Debian", "slug": "debian-12-x64", "public": true, "type": "base" },
+      "volume_ids": [],
+      "size": { "slug": "s-1vcpu-512mb-10gb", "memory": 512, "vcpus": 1, "disk": 10, "transfer": 0.5, "price_monthly": 4 },
+      "size_slug": "s-1vcpu-512mb-10gb",
+      "networks": {
+        "v4": [
+          { "ip_address": "10.104.0.2", "netmask": "255.255.240.0", "gateway": "", "type": "private" },
+          { "ip_address": "203.0.113.30", "netmask": "255.255.240.0", "gateway": "203.0.113.1", "type": "public" }
+        ],
+        "v6": [{ "ip_address": "2400:6180:0:d2::1a2b:3001", "netmask": 64, "gateway": "2400:6180:0:d2::1", "type": "public" }]
+      },
+      "region": { "name": "Singapore 1", "slug": "sgp1", "available": true },
+      "tags": ["proxy"],
+      "vpc_uuid": "5a4981aa-9653-4bd1-bef5-d6bff52042e4"
+    }
+  ],
+  "links": { "pages": { "next": "https://api.digitalocean.com/v2/droplets?page=2&per_page=200", "last": "https://api.digitalocean.com/v2/droplets?page=2&per_page=200" } },
+  "meta": { "total": 2 }
+}

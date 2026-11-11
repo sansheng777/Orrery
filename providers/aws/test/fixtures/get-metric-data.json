@@ -1,0 +1,12 @@
+{
+  "MetricDataResults": [
+    {
+      "Id": "m0",
+      "Label": "CPUUtilization",
+      "Timestamps": [1793242500, 1793242200],
+      "Values": [12.344, 9.8],
+      "StatusCode": "Complete"
+    }
+  ],
+  "Messages": []
+}

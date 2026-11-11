@@ -1,0 +1,6 @@
+{
+  "name": "orrery-kamatera",
+  "private": true,
+  "description": "Kamatera servers and control tools for Orrery (no dependencies)",
+  "type": "module"
+}

@@ -1,0 +1,1 @@
+{"__type":"AccessDeniedException","Message":"User: arn:aws:iam::123456789012:user/orrery is not authorized to perform: ce:GetCostAndUsage on resource: arn:aws:ce:us-east-1:123456789012:/GetCostAndUsage"}

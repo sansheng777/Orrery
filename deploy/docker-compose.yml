@@ -1,0 +1,26 @@
+# Orrery as a remote MCP connector, reached through a Cloudflare Tunnel.
+# The tunnel dials out to Cloudflare, so this machine opens no inbound ports for it.
+# Setup: docs/deploy.md. Point the tunnel's public hostname at http://orrery:8787.
+services:
+  orrery:
+    build:
+      context: ..                 # repository root, so the image includes agent/ and providers/
+      dockerfile: agent/Dockerfile
+    image: orrery:local
+    restart: unless-stopped
+    environment:
+      ORRERY_ROLE: admin                                   # cloud control + SSH monitoring and commands; every change goes to data/audit.log
+      ORRERY_SELF_IP: ${ORRERY_SELF_IP:-}                  # this machine's public IP (enable-ssh.sh sets it); it is never stopped, rebooted or reinstalled
+      ORRERY_PROTECTED_IPS: ${ORRERY_PROTECTED_IPS:-}      # more machines a chat may start but never stop or delete (comma-separated IPs)
+      ORRERY_GCP_SSH_USER: ${ORRERY_GCP_SSH_USER:-orrery}  # login user onboarding creates on Google Cloud instances
+      ORRERY_TOKEN: ${ORRERY_TOKEN:-}                      # optional: a connector token of 32+ characters instead of the generated data/token
+    volumes:
+      - ./data:/data              # connector token, cloud credentials, the SSH key (data/keys) and the audit log
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  tunnel:
+    image: cloudflare/cloudflared:2026.10.0   # pinned; Cloudflare supports a release for about a year, bump it now and then
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --protocol http2 run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}

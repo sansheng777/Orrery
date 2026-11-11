@@ -1,0 +1,1 @@
+{ "errors": [{ "field": "image", "reason": "image is not valid" }, { "field": "root_pass", "reason": "Password does not meet strength requirement." }] }

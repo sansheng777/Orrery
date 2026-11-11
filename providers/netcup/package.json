@@ -1,0 +1,6 @@
+{
+  "name": "orrery-netcup",
+  "private": true,
+  "description": "netcup views and controls for Orrery (SCP REST API, no dependencies)",
+  "type": "module"
+}

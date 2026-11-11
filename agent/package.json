@@ -1,0 +1,23 @@
+{
+  "name": "orrery-agent",
+  "version": "0.5.0",
+  "description": "Orrery MCP server: SSH monitoring and commands for your servers, auto-discovery and onboarding across cloud providers, and each provider's tools",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node test/parse.js && node ../providers/aws/test/parse.js && node ../providers/netcup/test/parse.js && node ../providers/netcup/test/admin.js && node ../providers/linode/test/parse.js && node ../providers/gcp/test/parse.js && node ../providers/aliyun/test/parse.js && node ../providers/vultr/test/parse.js && node ../providers/digitalocean/test/parse.js && node ../providers/kamatera/test/parse.js && node test/pool.js && node test/live.js && node test/providers.js && node test/onboarding.js && node test/smoke.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "ssh2": "^1.17.0",
+    "zod": "^4.6.7"
+  },
+  "type": "module",
+  "bin": {
+    "orrery": "src/index.js"
+  },
+  "engines": {
+    "node": ">=20.6"
+  }
+}
