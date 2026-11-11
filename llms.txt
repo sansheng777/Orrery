@@ -1,6 +1,6 @@
 # Orrery
 
-> Self-hosted MCP server that discovers servers across AWS (EC2, Lightsail), netcup, Linode, Google Cloud, Alibaba Cloud, Vultr, DigitalOcean and Kamatera, onboards them over SSH, and gives AI assistants tools to monitor and control them, with guards for destructive actions. Runs in Docker behind a Cloudflare Tunnel. MIT.
+> Self-hosted MCP server that discovers servers across AWS (EC2, Lightsail), netcup, Linode, Google Cloud, Alibaba Cloud, Vultr, DigitalOcean and Kamatera, onboards them over SSH, and gives AI assistants tools to monitor and control them, with guards for destructive actions. Needs one dedicated, always-on VPS (the Orrery host), where it runs in Docker behind a Cloudflare Tunnel. MIT.
 
 Start with AGENTS.md: deploy commands, client setup, publishing the claude.ai dashboard, and the operating rules.
 

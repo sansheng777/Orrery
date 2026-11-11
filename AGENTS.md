@@ -6,7 +6,14 @@ This file is for AI agents. Part 1 is for helping a user deploy and use Orrery; 
 
 ## Part 1: deploying and using Orrery
 
-### Deploy (run on the user's VPS as root)
+### First: the Orrery host
+
+Orrery needs one dedicated, always-on VPS, the Orrery host. It runs there, every client connects to it, and all credentials stay on it. Before any deploy step, ask the user which machine that is.
+
+- It runs nothing else, and it is not a machine an assistant may stop or rebuild. Debian or Ubuntu, a public IPv4, root SSH access; 1 vCPU and 1 GB of memory are typically enough.
+- No such machine: the user creates one first, at any provider. Or they use the local mode in the client table below, which needs no server but runs on their own computer and offers only the SSH tools and read-only cloud listings.
+
+### Deploy (run on the Orrery host as root)
 
 ```bash
 apt update && apt install -y git curl && curl -fsSL https://get.docker.com | sh   # skip if Docker is installed

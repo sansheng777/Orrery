@@ -6,7 +6,7 @@ Read [security.md](security.md) first: the Orrery host ends up holding credentia
 
 ## What you need
 
-- A small, dedicated VPS with Debian or Ubuntu, a public IPv4 address and root SSH access with a key. Run nothing else on it.
+- A small, dedicated VPS that stays on: the Orrery host. Debian or Ubuntu, a public IPv4 address and root SSH access with a key; 1 vCPU and 1 GB of memory are typically enough. Run nothing else on it.
 - A domain whose DNS is on Cloudflare (the free plan is enough).
 - Credentials for each cloud you want to manage ([providers.md](providers.md)).
 

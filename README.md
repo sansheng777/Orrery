@@ -4,6 +4,12 @@ Orrery is a self-hosted MCP server for your servers across many clouds. It runs 
 
 AI agents: start with [AGENTS.md](AGENTS.md). It has the deploy commands, client setup, dashboard publishing and operating rules.
 
+## What you need
+
+- **One dedicated, always-on VPS: the Orrery host.** This is the one thing Orrery cannot do without. It runs there, your AI client connects to it, and every credential and the SSH key stay on it. Use a machine that runs nothing else: Debian or Ubuntu, a public IPv4, root SSH access. A small one will do: the two containers use about 200 MB of memory for a dozen servers.
+- A domain on Cloudflare (the free plan is enough), for the tunnel that makes the host reachable without opening a port.
+- API credentials for the clouds you use.
+
 ## What it does
 
 - **Discovery across 8 providers.** Every machine with a public IPv4 shows up in `list_servers` within a minute. Deleted machines drop out.
@@ -33,7 +39,7 @@ New machines need no onboarding if they get Orrery's public key at creation ([Ne
 
 ## Quick start
 
-You need a small dedicated VPS with Docker, a domain on Cloudflare, and credentials for your clouds. The commands are in [AGENTS.md](AGENTS.md#deploy-on-the-users-vps-as-root); the full walkthrough with client setup and network restrictions is in [docs/deploy.md](docs/deploy.md).
+On the Orrery host: the commands are in [AGENTS.md](AGENTS.md#deploy-run-on-the-orrery-host-as-root); the full walkthrough with client setup and network restrictions is in [docs/deploy.md](docs/deploy.md).
 
 To try it without a server, run `npm install && node agent/src/index.js` on your computer. This local `hub` role offers the SSH tools and read-only cloud listings ([Running locally](docs/architecture.md#running-locally)).
 
