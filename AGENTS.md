@@ -20,7 +20,7 @@ Do one step at a time. When a step asks the user for something, send it and wait
 
 Three rules for the whole setup:
 
-- Never ask the user to send you a token, password, key or the connector URL, and never repeat one. If they send one anyway: an API token is deleted and created again; the connector token is rotated (`docs/security.md`, "Rotating secrets").
+- Never ask the user to send you a token, password, key or the connector URL, and never repeat one. If they send one anyway, it must be replaced before it is used: see the last row of the table at the end.
 - Never run the install command in your own shell or sandbox. It runs on the user's VPS, and the user starts it, even if you can reach the VPS: the installer shows secrets on its terminal.
 - Do not improvise other ways to install. If a step fails, use the table at the end.
 
@@ -95,9 +95,9 @@ If a step fails:
 | `Not connected yet` under "Waiting for the tunnel" | Ask for the output of `cd ~/orrery/deploy && docker compose logs --tail 30 tunnel` |
 | The client cannot connect, or gets 403 | Only claude.ai and the addresses given in step 4 may reach the hostname. To allow another address later, edit the WAF rule in Cloudflare: `docs/deploy.md`, step 7 |
 | The Orrery tools do not appear | Open a new conversation |
-| The user sent you the URL or a token | Do not repeat it. Tell them to rotate it: `docs/security.md`, "Rotating secrets" |
+| The user sent you the URL or a token | Do not repeat it. A Cloudflare token: they delete it and create a new one. The connector URL: before step 5 they run `cd ~/orrery/deploy && rm data/token && docker compose restart orrery && cat data/token` on the VPS, which prints a new secret; the URL is `https://HOSTNAME/mcp/` followed by it, and the old one stops working |
 
-About the installer: it installs Docker, adds 2 GB of swap if there is none, creates the tunnel, its route, the DNS record and a WAF rule that lets only claude.ai (`160.79.104.0/21`) and `ORRERY_ALLOW_IPS` reach the hostname, then starts Orrery and makes the host trust its key. In Cloudflare it only adds things, and the API token is stored nowhere. It shows the connector URL only when its output is a terminal. Run again without a hostname, it updates Orrery. The same setup by hand: `docs/deploy.md`.
+About the installer: it installs Docker, adds 2 GB of swap if there is none, creates the tunnel, its route, the DNS record and a WAF rule that lets only claude.ai (`160.79.104.0/21`) and `ORRERY_ALLOW_IPS` reach the hostname, then starts Orrery and makes the host trust its key. In Cloudflare it only adds things, and the API token is stored nowhere. It shows the connector URL only when its output is a terminal. Running the same line again is always safe: it reuses what it already created. Run without a hostname, it updates Orrery. The same setup by hand: `docs/deploy.md`.
 
 ### Connect a client
 
