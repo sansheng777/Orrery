@@ -139,7 +139,7 @@ Each provider has a listing, power and delete tools, a generic API tool (D) and 
 
 Ids: `netcup:<server id>`, `ec2:<region>:<instance id>`, `lightsail:<region>:<name>`, `linode:<id>`, `gcp:<project>:<zone>:<name>`, `aliyun:<region>:<instance id>`, `vultr:<instance id>`, `digitalocean:<droplet id>`, `kamatera:<server id>`, `ssh:<alias>` for `~/.ssh/config`, and a random 8-character id for `add_server`.
 
-- The Orrery host (the machine with `ORRERY_SELF_IP`) is listed first and tagged `orrery-host`, at any provider. A saved server with that IP, or one that overrides the discovered host, is tagged too.
+- The Orrery host (the machine with `ORRERY_SELF_IP`) is listed first and tagged `orrery-host`, at any provider. A saved server with that IP, or one that overrides the discovered host, is tagged too. While no provider finds it and no saved server covers it, it is listed under the id `orrery-host` (root, port 22).
 - A saved server with the same IP as a discovered one wins. Use that to change the user, port or key.
 - When a provider's API fails, or does not answer within 90 seconds, its machines from the last good answer stay listed and the other providers are not held up, and `discoveryErrors` reports the error with `usingListFrom`. netcup reads each server's details in a separate call; a failed call keeps that server's last record. These fallbacks are in memory only.
 - `server_stats`, `server_pulse` and `run_command` use the last listing and refresh it in the background. A machine created a moment ago can come back as "Unknown server": call `list_servers` once.
@@ -192,7 +192,9 @@ Follow progress with `netcup_get_task` or `netcup_list_tasks`, `linode_query /ac
 | "The SSH host key of ... changed" | The server presents another key than the pinned one. After a reinstall or replacement, accept it with `accept_host_key`; otherwise see [security.md](security.md#ssh-host-keys) |
 | Lightsail onboarding: "a host key that Lightsail has not recorded" | The instance's host keys were regenerated. Clear AWS's record with `aws_call` (Lightsail `DeleteKnownHostKeys`), then onboard again |
 | Login fails and will not be retried for 10 minutes | The server rejected Orrery's key. Onboard it, or fix the user, port or key with `add_server` |
-| `enable-ssh.sh`: "No public IPv4 on this machine's interfaces" | 1:1 NAT cloud. Add `ORRERY_SELF_IP=<public IPv4>` to `deploy/.env` and run it again |
+| `enable-ssh.sh`: "Could not find this machine's public IPv4" | No interface has one and Cloudflare could not be asked. Add `ORRERY_SELF_IP=<public IPv4>` to `deploy/.env` and run it again |
+| `install.sh`: "Cloudflare did not accept the API token" | Paste the whole token, and check it is active and has the four permissions ([deploy.md](deploy.md#the-short-way)) |
+| `install.sh`: "already has a DNS record" | The hostname is in use. Remove the record in Cloudflare or choose another hostname; nothing was changed |
 | `enable-ssh.sh`: "ORRERY_SELF_IP must be a plain IPv4 address" | Fix the value in `.env`. IPv6 is not accepted |
 | A provider returns 401, `invalid_grant`, `InvalidAccessKeyId` or `SignatureDoesNotMatch` | The credential was revoked, expired or deleted. Replace it ([providers.md](providers.md)); for netcup, sign in again |
 | Vultr or Kamatera: 401 or 403 with a valid key | The key's IP restriction does not include the Orrery host |
@@ -244,6 +246,7 @@ Follow progress with `netcup_get_task` or `netcup_list_tasks`, `linode_query /ac
 | `ORRERY_GCP_SSH_USER` | `orrery` | User that onboarding creates on Google Cloud |
 | `ORRERY_ALLOW_EXEC` | on | `0` removes `run_command` and `container_action` (hub role only) |
 | `ORRERY_NETCUP_RESCUE` | off | `1` enables netcup onboarding through rescue. Leave it off. Not passed by compose |
+| `ORRERY_ALLOW_IPS`, `ORRERY_HOME`, `CLOUDFLARE_API_TOKEN` | empty, `~/orrery`, prompt | Read by `install.sh` only: more addresses allowed to reach the hostname, where the checkout goes, the API token for that run |
 | `ORRERY_DIR` | `~/.orrery` (`/data` in the image) | Data directory |
 | `ORRERY_SSH_CONFIG` | `~/.ssh/config` | Extra host source for `list_servers` |
 | `PORT` | 8787 | HTTP port. Setting it also switches to HTTP |
@@ -280,7 +283,8 @@ The deployed container does not receive these. Use the files in `data/`.
 | `providers/netcup/admin.js`, `login.js` | netcup control tools; device login |
 | `agent/test/`, `providers/<name>/test/` | Tests with fake SSH servers and recorded fixtures |
 | `dashboard/orrery.html` | The claude.ai Artifact |
-| `deploy/docker-compose.yml`, `deploy/enable-ssh.sh` | Services `orrery` and `tunnel`; one-time host setup |
+| `deploy/install.sh`, `deploy/cloudflare.mjs` | One-command setup of the host; the tunnel, DNS record and WAF rule through Cloudflare's API (tests in `deploy/test.mjs`) |
+| `deploy/docker-compose.yml`, `deploy/enable-ssh.sh` | Services `orrery` and `tunnel`; starts them and makes the host trust Orrery's key |
 | `.github/workflows/` | `test.yml` (Node 20 and 22), `release.yml` (image on version tags) |
 
 The root `package.json` defines npm workspaces. Only `aws` has dependencies (AWS SDK v3); the others use `fetch`, and `gcp` and `aliyun` sign their own requests. `.dockerignore` lets only code into the image; `.gitignore` keeps credentials and runtime data out of the repository.

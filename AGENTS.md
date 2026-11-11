@@ -17,20 +17,15 @@ Orrery needs one dedicated, always-on VPS, the Orrery host. It runs there, every
 ### Deploy (run on the Orrery host as root)
 
 ```bash
-apt update && apt install -y git curl && curl -fsSL https://get.docker.com | sh   # skip if Docker is installed
-git clone https://github.com/sansheng777/Orrery ~/orrery && cd ~/orrery/deploy
-mkdir -p data && chown 1000:1000 data && chmod 700 data
-# USER: echo "TUNNEL_TOKEN=<Cloudflare tunnel token>" > .env && chmod 600 .env
-# On AWS, Google Cloud, Alibaba Cloud (public IP not on the interface): echo "ORRERY_SELF_IP=<public IPv4>" >> .env
-# USER: cloud credentials, one JSON file per provider in data/, mode 600, owner 1000 (netcup: a device login instead)
-bash enable-ssh.sh        # records ORRERY_SELF_IP, builds and starts, trusts the agent key for root
-# USER: cat data/token    # the connector token, for the URL or header of their client
+curl -fsSL https://raw.githubusercontent.com/sansheng777/Orrery/main/deploy/install.sh | bash -s -- orrery.example.com
 ```
 
-- Lines marked USER handle secrets, so the user runs them in their own terminal. Never ask for a tunnel token, cloud credential or connector token in the conversation and never print one into it: conversations are stored. `docs/providers.md` shows how to put a secret on the host without displaying it.
-- Cloudflare: create a tunnel, put its token in `.env`, and add a public hostname pointing to `http://orrery:8787`.
-- Restrict the hostname: for claude.ai, a WAF custom rule that blocks every source outside Anthropic's egress range `160.79.104.0/21`; for other clients, Cloudflare Access service tokens or an allowlist of the user's IPs.
-- This is the short form. `docs/deploy.md` has every step with its checks, including tool approvals in the client and SSH hardening after the first connection; `docs/providers.md` has the credentials.
+- The user runs this in their own terminal on the host, with their hostname (a domain they have on Cloudflare). It asks them for a Cloudflare API token, typed hidden, and ends by showing the connector URL, which holds the connector token. Run from a session without a terminal, it stops and asks for one; with `CLOUDFLARE_API_TOKEN` set it runs unattended and prints no token.
+- The Cloudflare token (My Profile > API Tokens > Create Custom Token): Account > Cloudflare Tunnel > Edit; Zone > Zone > Read, DNS > Edit, Zone WAF > Edit, limited to that domain. It is stored nowhere; the user deletes it afterwards.
+- What it does: installs Docker, adds 2 GB of swap if there is none, creates the tunnel, its route, the DNS record and a WAF rule that lets only claude.ai (`160.79.104.0/21`) reach the hostname, then starts Orrery and makes the host trust its key. It only adds things in Cloudflare and refuses a hostname that already has a DNS record. Run again without a hostname, it updates Orrery.
+- Clients on the user's computer need their IP allowed too: `ORRERY_ALLOW_IPS="203.0.113.30"` before `bash`, or `docs/deploy.md`, step 7.
+- Never ask for a tunnel token, API token, cloud credential or connector token in the conversation and never print one into it: conversations are stored. Cloud credentials come afterwards, one JSON file per provider in `deploy/data/` (`docs/providers.md`).
+- By hand, step by step, with tool approvals and SSH hardening: `docs/deploy.md`.
 
 ### Connect a client
 
@@ -80,7 +75,7 @@ The server sends these rules to every client as MCP instructions (`agent/src/ins
 | `providers/<name>/index.js` | One provider each: `loadConfig`, `register(server, ctx)`, listings, guards, tests in `test/` |
 | `providers/shared.js` | Shared by the providers: `protectedIps`, `jsonRequest` (timeout, one retry for GETs) |
 | `dashboard/orrery.html` | The claude.ai Artifact |
-| `deploy/` | `docker-compose.yml` (`orrery`, `tunnel`), `enable-ssh.sh` |
+| `deploy/` | `install.sh` (one-command setup), `cloudflare.mjs` (tunnel, DNS record and WAF rule through the API; tests in `test.mjs`), `docker-compose.yml` (`orrery`, `tunnel`), `enable-ssh.sh` |
 
 Rules:
 

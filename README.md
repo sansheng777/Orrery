@@ -39,7 +39,13 @@ New machines need no onboarding if they get Orrery's public key at creation ([Ne
 
 ## Quick start
 
-On the Orrery host: the commands are in [AGENTS.md](AGENTS.md#deploy-run-on-the-orrery-host-as-root); the full walkthrough with client setup and network restrictions is in [docs/deploy.md](docs/deploy.md).
+On the Orrery host, as root, with the hostname you want Orrery to have:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sansheng777/Orrery/main/deploy/install.sh | bash -s -- orrery.example.com
+```
+
+It asks once for a Cloudflare API token, typed hidden and used for that run only, and does the rest: Docker, swap, the Cloudflare tunnel with its DNS record and firewall rule, and Orrery itself. At the end it shows the URL to add to your AI client. What it does, step by step, and how to do it by hand: [docs/deploy.md](docs/deploy.md).
 
 To try it without a server, run `npm install && node agent/src/index.js` on your computer. This local `hub` role offers the SSH tools and read-only cloud listings ([Running locally](docs/architecture.md#running-locally)).
 

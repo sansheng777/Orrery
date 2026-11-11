@@ -17,4 +17,5 @@ Start with AGENTS.md: deploy commands, client setup, publishing the claude.ai da
 
 - [agent/src/instructions.js](agent/src/instructions.js): the rules sent to every MCP client
 - [dashboard/orrery.html](dashboard/orrery.html): claude.ai Artifact dashboard
+- [deploy/install.sh](deploy/install.sh): one-command setup of the Orrery host
 - [deploy/docker-compose.yml](deploy/docker-compose.yml): services `orrery` and `tunnel`

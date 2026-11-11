@@ -12,6 +12,21 @@ Read [security.md](security.md) first: the Orrery host ends up holding credentia
 
 All commands run as root on the Orrery host.
 
+## The short way
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sansheng777/Orrery/main/deploy/install.sh | bash -s -- orrery.example.com
+```
+
+Run it in your own terminal, with your hostname. It asks for a Cloudflare API token (typed hidden, used for this run only, stored nowhere) and then does steps 1, 2, 4 and 7 below: Docker, 2 GB of swap if the host has none, the tunnel with its route and DNS record, a WAF rule that lets only claude.ai reach the hostname, and Orrery itself. It ends with the URL for step 6.
+
+- The token: My Profile > API Tokens > Create Token > Create Custom Token, with Account > Cloudflare Tunnel > Edit and, for your domain, Zone > Zone > Read, DNS > Edit and Zone WAF > Edit. Delete it when the script is done.
+- It only adds things in Cloudflare. A hostname that already has a DNS record is refused, and existing WAF rules are left as they are.
+- `ORRERY_ALLOW_IPS="203.0.113.30 198.51.100.0/24"` before `bash` lets those addresses reach the hostname too (clients on your own computer). `CLOUDFLARE_API_TOKEN` replaces the prompt; without a terminal the connector token is not printed.
+- Run again without a hostname, it updates Orrery. Its log is `/var/log/orrery-install.log`.
+
+Then continue with step 3 (cloud credentials) and step 6. The rest of this page is the same setup by hand.
+
 ## 1. Install Docker and get the code
 
 ```bash
@@ -45,11 +60,7 @@ The tunnel connects outbound from the host, so the host opens no inbound port an
 
 4. Add a public hostname (published application route) to the tunnel: subdomain `orrery`, your domain, type `HTTP`, URL `orrery:8787`.
 
-On a cloud with 1:1 NAT (AWS EC2 and Lightsail, Google Cloud, Alibaba Cloud), the public address is not on a network interface. Add it now:
-
-```bash
-echo "ORRERY_SELF_IP=<public IPv4>" >> .env
-```
+On a cloud with 1:1 NAT (AWS EC2 and Lightsail, Google Cloud, Alibaba Cloud), the public address is not on a network interface. Step 4 finds it by itself; to set it yourself, add `ORRERY_SELF_IP=<public IPv4>` to `.env`.
 
 ## 3. Add cloud credentials
 
@@ -72,7 +83,7 @@ bash enable-ssh.sh
 
 The script:
 
-1. Takes `ORRERY_SELF_IP` from `.env` if set (an inline `# comment` is dropped). Otherwise it uses the first public IPv4 on the host's interfaces, skipping private, loopback and carrier-grade NAT (`100.64.0.0/10`) addresses. It stops if it finds none, or if the value is not a plain IPv4 address, and writes the result back to `.env`.
+1. Takes `ORRERY_SELF_IP` from `.env` if set (an inline `# comment` is dropped). Otherwise it uses the first public IPv4 on the host's interfaces, skipping private, loopback and carrier-grade NAT (`100.64.0.0/10`) addresses, or, when no interface has one, the address Cloudflare sees the host calling from. It stops if it finds none, or if the value is not a plain IPv4 address, and writes the result back to `.env`.
 2. Builds and starts both containers (`docker compose up -d --build`).
 3. Waits for the agent's SSH key (`data/keys/id_ed25519`) and adds its public half to `/root/.ssh/authorized_keys`, so Orrery can monitor its own host.
 4. Warns if sshd has `PermitRootLogin no` or `forced-commands-only`. Set `PermitRootLogin prohibit-password` and restart sshd.
@@ -130,7 +141,7 @@ To debug from your computer with Option A, add your IP to the rule for a while.
 
 ## 8. Check that it works
 
-In a new conversation, ask the assistant to list your servers. It calls `list_servers`. If the Orrery host runs at a configured provider, it is listed first and tagged `orrery-host`. Otherwise add it with `add_server` (its public IP, user `root`, no password or key path). Ask for `cloud_providers` to see which providers are configured and why any failed.
+In a new conversation, ask the assistant to list your servers. It calls `list_servers`. The Orrery host is always listed first and tagged `orrery-host`, so a new deployment shows one server before any cloud credential is added. If its SSH is not on port 22 or root may not log in, cover it with `add_server` (its public IP, the user and port). Ask for `cloud_providers` to see which providers are configured and why any failed.
 
 Orrery reads credential files on every request, so adding one needs no restart. Clients fix their tool list when a conversation starts: open a new conversation to see a new provider's tools.
 
