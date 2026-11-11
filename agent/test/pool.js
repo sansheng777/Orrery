@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { register } from "node:module";
+import { spawnSync } from "node:child_process";
 
 register("./fake-ssh2.js", import.meta.url);
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "orrery-pool-"));
@@ -22,7 +23,7 @@ globalThis.setTimeout = (fn, ms, ...args) => {
 };
 globalThis.clearTimeout = (t) => (idle.includes(t) ? (t.cleared = true) : realClearTimeout(t));
 
-const { exec, dropConnections, closeAll } = await import("../src/ssh.js");
+const { exec, runInDir, dropConnections, closeAll } = await import("../src/ssh.js");
 const { Client, clients } = await import("ssh2");
 
 const keyPath = path.join(dataDir, "key");
@@ -85,6 +86,45 @@ Client.reply = () => [Buffer.alloc(400 * 1024, "a"), Buffer.alloc(400 * 1024, "b
 const big = await exec(srv, "big");
 assert.equal(Buffer.byteLength(big.stdout), 512 * 1024);
 assert.equal(big.truncated, true);
+
+// A refused channel (sshd MaxSessions) fails that call with a clear message and keeps the connection.
+{
+  const busy = { ...srv, id: "s6", host: "203.0.113.6" };
+  Client.reply = (client) => [Buffer.from(client.opts.host)];
+  await where(busy);
+  const conn = clients.at(-1);
+  Client.noChannel.add(busy.host);
+  await assert.rejects(exec(busy, "where"), /refused another session .*MaxSessions/);
+  assert.equal(conn.ended, false, "the shared connection is kept");
+  Client.noChannel.clear();
+  assert.equal(await where(busy), busy.host);
+  assert.equal(clients.at(-1), conn, "and used again");
+}
+
+// A channel that closes without an exit code (the connection went away) is an error, not a result.
+Client.reply = () => ({ chunks: [Buffer.from("partial")], code: undefined });
+await assert.rejects(exec(srv, "long"), /closed before the command finished/);
+
+// runInDir with a real bash behind the fake connection: the working directory and what happens when it is gone.
+{
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "orrery-cwd-"));
+  fs.mkdirSync(path.join(home, "it's here"));
+  Client.reply = (client, command) => {
+    const r = spawnSync("bash", ["-c", command], { env: { ...process.env, HOME: home }, cwd: home });
+    return { chunks: [r.stdout], code: r.status };
+  };
+  const real = fs.realpathSync(home);
+  assert.deepEqual(await runInDir(srv, "pwd", null, 10).then((r) => [r.output.trim(), r.cwd, r.exitCode]), [real, real, 0], "no cwd: the home directory");
+  assert.equal((await runInDir(srv, "cd /tmp && true", "~", 10)).cwd, fs.realpathSync("/tmp"), "the directory the command ended in comes back");
+  assert.equal((await runInDir(srv, "pwd", "~/it's here", 10)).cwd, path.join(real, "it's here"), "~/ and quotes in the path");
+  assert.equal((await runInDir(srv, "pwd", path.join(real, "it's here"), 10)).cwd, path.join(real, "it's here"));
+  const gone = await runInDir(srv, "echo SHOULD-NOT-RUN", "/no/such/dir'; echo INJECTED; '", 10);
+  assert.equal(gone.exitCode, 1, "a cwd that does not exist fails the call");
+  assert.match(gone.output, /orrery: cannot cd to/);
+  assert.doesNotMatch(gone.output, /SHOULD-NOT-RUN|^INJECTED/m, "the command does not run elsewhere, and the path is not executed");
+  assert.equal(gone.cwd, real, "and the reported directory is where the shell really is");
+  fs.rmSync(home, { recursive: true, force: true });
+}
 
 closeAll();
 fs.rmSync(dataDir, { recursive: true, force: true });

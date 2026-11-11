@@ -147,7 +147,7 @@ export function stream(server, command, { onData, onEnd }) {
       try {
         client.exec(command, (err, ch) => {
           // A refused channel (e.g. sshd's MaxSessions) fails this call only; the shared connection stays.
-          if (err) return end(err);
+          if (err) return end(channelError(err, server));
           channel = ch;
           ch.on("data", (d) => {
             touch(key);
@@ -171,6 +171,12 @@ export function stream(server, command, { onData, onEnd }) {
   };
 }
 
+// sshd allows a limited number of sessions per connection (MaxSessions, 10 by default).
+const channelError = (err, server) =>
+  /channel open failure/i.test(err.message)
+    ? new Error(`${server.host} refused another session on this connection (sshd MaxSessions): too many commands are running there at once. Try again when some have finished.`)
+    : err;
+
 export async function exec(server, command, { timeoutSec = 30 } = {}) {
   const key = poolKey(server);
   const entry = getEntry(server);
@@ -179,7 +185,7 @@ export async function exec(server, command, { timeoutSec = 30 } = {}) {
   return new Promise((resolve, reject) => {
     const onChannel = (err, stream) => {
       // A refused channel (e.g. sshd's MaxSessions) fails this call only; the shared connection stays.
-      if (err) return reject(err);
+      if (err) return reject(channelError(err, server));
       const stdout = collector();
       const stderr = collector();
       let timedOut = false;
@@ -484,7 +490,7 @@ export async function runInDir(server, command, cwd, timeoutSec) {
   // A cwd that does not exist fails the call instead of running the command somewhere else.
   const dir = !cwd ? "~" : cwd === "~" ? '"$HOME"' : cwd.startsWith("~/") ? `"$HOME"/${quote(cwd.slice(2))}` : quote(cwd);
   const shown = String(cwd || "~").replace(/[^\w./~ -]/g, "?");
-  const script = `cd -- ${dir} || { echo "orrery: cannot cd to ${shown}" >&2; exit 1; }
+  const script = `cd -- ${dir} || { echo "orrery: cannot cd to ${shown}" >&2; printf '\\n${marker}%s\\n' "$(pwd)"; exit 1; }
 ${command}
 __rc=$?
 printf '\\n${marker}%s\\n' "$(pwd)"

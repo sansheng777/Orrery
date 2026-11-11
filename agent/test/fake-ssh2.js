@@ -1,6 +1,7 @@
 // A stand-in for the ssh2 package, used by test/pool.js. Registered as a module hook (node:module register)
 // it sends every import of "ssh2" to this file; imported that way, its Client records each connection and
 // answers every command with Client.reply(client, command), by default the address it is connected to.
+// A reply is a list of chunks (exit code 0) or { chunks, code }.
 import { EventEmitter } from "node:events";
 
 export async function resolve(specifier, context, next) {
@@ -21,13 +22,16 @@ export class Client extends EventEmitter {
   }
 
   exec(command, cb) {
+    if (Client.noChannel.has(this.opts.host)) return cb(new Error("(SSH) Channel open failure: "));
     const stream = new EventEmitter();
     stream.stderr = new EventEmitter();
     stream.close = () => {};
     cb(null, stream);
     setImmediate(() => {
-      for (const chunk of Client.reply(this, command)) stream.emit("data", chunk);
-      stream.emit("close", 0);
+      const reply = Client.reply(this, command);
+      const { chunks, code } = Array.isArray(reply) ? { chunks: reply, code: 0 } : reply;
+      for (const chunk of chunks) stream.emit("data", chunk);
+      stream.emit("close", code);
     });
   }
 
@@ -41,6 +45,7 @@ export class Client extends EventEmitter {
 }
 Client.refuse = new Set(); // hosts whose login fails
 Client.stall = new Set(); // hosts that never answer the handshake
+Client.noChannel = new Set(); // hosts that refuse to open another channel (sshd MaxSessions)
 Client.reply = (client) => [Buffer.from(`${client.opts.host}:${client.opts.port}`)];
 
 export default { Client, utils: {} };

@@ -14,6 +14,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export const PUBKEY_RE = /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp\d+) [A-Za-z0-9+/=]+( [^\n'"]*)?$/;
 
+// Shell: end a non-empty file that lacks a final newline, so an appended key starts on its own line
+// and is not glued to the last key ($(tail -c1) is empty only when the last byte is a newline).
+const endLine = (f) => `[ -z "$(tail -c1 ${f} 2>/dev/null)" ] || echo >> ${f}`;
+
 // Appends the key to the login user's authorized_keys once. Each step reports itself on failure
 // ("ORRERY_FAIL <step>: <error>") so a refusal on the remote side is never silent.
 export function installScript(pub) {
@@ -24,7 +28,7 @@ D="$HOME/.ssh"; F="$D/authorized_keys"
 fail() { echo "ORRERY_FAIL $1: $(cat /tmp/orrery-err.$$ 2>/dev/null)"; rm -f /tmp/orrery-err.$$; exit 1; }
 mkdir -p "$D" 2>/tmp/orrery-err.$$ || fail "mkdir $D"
 touch "$F" 2>/tmp/orrery-err.$$ || fail "touch $F"
-grep -qxF ${k} "$F" 2>/dev/null || { echo ${k} >> "$F"; } 2>/tmp/orrery-err.$$ || fail "append to $F"
+grep -qxF ${k} "$F" 2>/dev/null || { ${endLine('"$F"')}; echo ${k} >> "$F"; } 2>/tmp/orrery-err.$$ || fail "append to $F"
 chmod 700 "$D" 2>/tmp/orrery-err.$$ && chmod 600 "$F" 2>>/tmp/orrery-err.$$ || fail "chmod"
 grep -qxF ${k} "$F" || fail "the key is not in $F after writing (immutable file? full disk?)"
 rm -f /tmp/orrery-err.$$
@@ -51,7 +55,8 @@ done
 [ -n "$ROOT" ] || { echo ORRERY_NOROOT; exit 3; }
 umask 077
 mkdir -p "$ROOT/root/.ssh" && touch "$ROOT/root/.ssh/authorized_keys"
-grep -qxF "$PUB" "$ROOT/root/.ssh/authorized_keys" || echo "$PUB" >> "$ROOT/root/.ssh/authorized_keys"
+A="$ROOT/root/.ssh/authorized_keys"
+grep -qxF "$PUB" "$A" || { ${endLine('"$A"')}; echo "$PUB" >> "$A"; }
 chmod 700 "$ROOT/root/.ssh"; chmod 600 "$ROOT/root/.ssh/authorized_keys"; chown -R 0:0 "$ROOT/root/.ssh"
 for f in "$ROOT/etc/ssh/sshd_config" "$ROOT"/etc/ssh/sshd_config.d/*.conf; do
   [ -f "$f" ] && sed -i -E 's/^[[:space:]]*PermitRootLogin[[:space:]]+no([[:space:]]|$)/PermitRootLogin prohibit-password\\1/' "$f"
@@ -64,7 +69,7 @@ echo "ORRERY_OK $DEV"`;
 
 // The one line to paste as root where no API can install the key. Pasting it twice adds the key once.
 export const pasteCommand = (pub) =>
-  `K=${quote(pub)}; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && (grep -qxF "$K" ~/.ssh/authorized_keys || echo "$K" >> ~/.ssh/authorized_keys) && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys`;
+  `K=${quote(pub)}; F=~/.ssh/authorized_keys; mkdir -p ~/.ssh && touch "$F" && (grep -qxF "$K" "$F" || { ${endLine('"$F"')}; echo "$K" >> "$F"; }) && chmod 700 ~/.ssh && chmod 600 "$F"`;
 
 const looksUnreachable = (e) => /ETIMEDOUT|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|Timed out while waiting for handshake/i.test(e?.message || "");
 

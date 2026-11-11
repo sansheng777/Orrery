@@ -239,6 +239,16 @@ assert.ok(servers.some((s) => s.source === "netcup"), "one provider failing does
   assert.equal((fs.statSync(path.join(pasteHome, ".ssh", "authorized_keys")).mode & 0o777).toString(8), "600");
   fs.rmSync(pasteHome, { recursive: true, force: true });
 
+  // An authorized_keys file whose last line has no newline: the key goes on its own line, not glued to it.
+  for (const script of [installScript(PUB), pasteCommand(PUB)]) {
+    const h = fs.mkdtempSync(path.join(os.tmpdir(), "orrery-home-"));
+    fs.mkdirSync(path.join(h, ".ssh"));
+    fs.writeFileSync(path.join(h, ".ssh", "authorized_keys"), "ssh-rsa AAAAB3existing other");
+    execFileSync("sh", ["-c", script], { env: { ...process.env, HOME: h } });
+    assert.equal(fs.readFileSync(path.join(h, ".ssh", "authorized_keys"), "utf8"), `ssh-rsa AAAAB3existing other\n${PUB}\n`);
+    fs.rmSync(h, { recursive: true, force: true });
+  }
+
   // ssh failures: client notices are dropped, the real cause and how ssh ended are kept.
   const notices = "Warning: Permanently added '198.51.100.30' (ED25519) to the list of known hosts.\n** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n";
   assert.equal(sshFailure({ code: 1 }, "ORRERY_FAIL touch /home/admin/.ssh/authorized_keys: Permission denied\n", notices).message,
