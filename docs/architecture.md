@@ -294,7 +294,7 @@ The deployed container does not receive these. Use the files in `data/`.
 | `dashboard/orrery.html` | The claude.ai Artifact |
 | `deploy/install.sh`, `deploy/cloudflare.mjs` | One-command setup of the host; the tunnel, DNS record and WAF rule through Cloudflare's API (tests in `deploy/test.mjs`) |
 | `deploy/docker-compose.yml`, `deploy/enable-ssh.sh` | Services `orrery` and `tunnel`; starts them and makes the host trust Orrery's key |
-| `.github/workflows/` | `test.yml` (Node 20 and 22), `release.yml` (image on version tags) |
+| `.github/workflows/` | `test.yml` (Node 22 and 24, and the image), `release.yml` (a release from a version tag; a dry run by hand) |
 
 The root `package.json` defines npm workspaces. Only `aws` has dependencies (AWS SDK v3); the others use `fetch`, and `gcp` and `aliyun` sign their own requests. `.dockerignore` lets only code into the image; `.gitignore` keeps credentials and runtime data out of the repository.
 
@@ -316,7 +316,7 @@ Start from `providers/vultr/` or `providers/digitalocean/`, the simplest modules
 ## 12. Tests and releases
 
 ```bash
-npm install && npm test      # repository root; Node 20.6 or later
+npm install && npm test      # repository root; Node 22 or later
 ```
 
 Unit tests use recorded API answers and fake SSH servers. They never touch a real account.
