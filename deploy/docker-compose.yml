@@ -1,6 +1,7 @@
 # Orrery as a remote MCP connector, reached through a Cloudflare Tunnel.
 # The tunnel dials out to Cloudflare, so this machine opens no inbound ports for it.
 # Setup: docs/deploy.md. Point the tunnel's public hostname at http://orrery:8787.
+name: orrery # not the folder's name, "deploy", which another project on the host may share
 services:
   orrery:
     build:

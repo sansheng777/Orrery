@@ -36,7 +36,7 @@ main() {
     dir=$(cd "$(dirname "$SELF")/.." && pwd)
     from_checkout=1
   fi
-  : >>"$LOG"
+  : >>"$LOG" && chmod 600 "$LOG"
 
   if [ -z "$hostname" ] && ! grep -qs '^TUNNEL_TOKEN=' "$dir/deploy/.env"; then
     die "Give the public hostname for Orrery, on a domain you have on Cloudflare: bash install.sh orrery.example.com"
@@ -44,8 +44,9 @@ main() {
   if [ -n "$hostname" ]; then
     [[ "$hostname" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]] || die "Not a hostname: $hostname. Use lowercase, such as orrery.example.com."
     token=${CLOUDFLARE_API_TOKEN:-}
+    unset CLOUDFLARE_API_TOKEN # nothing this script starts inherits it
     if [ -z "$token" ]; then
-      { true </dev/tty; } 2>/dev/null || die "No terminal to ask for the Cloudflare API token. Run this in your own terminal, or set CLOUDFLARE_API_TOKEN."
+      { true </dev/tty; } 2>/dev/null || die "No terminal to ask for the Cloudflare API token. Run this in your own terminal on the host."
       cat <<EOF
 
 Create a Cloudflare API token for this run:
@@ -72,12 +73,13 @@ EOF
       die "Cloudflare did not accept the API token. Check that you pasted all of it and that it is active."
   fi
   if ! docker compose version >/dev/null 2>&1; then
-    run bash -c 'curl -fsSL https://get.docker.com | sh'
+    run bash -o pipefail -c 'curl -fsSL https://get.docker.com | sh'
   fi
 
   if [ -z "$(swapon --show --noheadings 2>/dev/null)" ] && [ ! -e /swapfile ]; then
     say "Adding 2 GB of swap"
     if fallocate -l 2G /swapfile 2>>"$LOG" && chmod 600 /swapfile && mkswap /swapfile >>"$LOG" 2>&1 && swapon /swapfile 2>>"$LOG"; then
+      [ -z "$(tail -c1 /etc/fstab 2>/dev/null)" ] || echo >>/etc/fstab # never glued to an unterminated last line
       echo '/swapfile none swap sw 0 0' >>/etc/fstab
     else
       rm -f /swapfile
@@ -94,6 +96,7 @@ EOF
     git -C "$dir" pull --ff-only >>"$LOG" 2>&1 || echo "   Could not update it (local changes?). Using it as it is."
   fi
   cd "$dir/deploy"
+  chmod 700 . # .env and data/ live here
   mkdir -p data && chown 1000:1000 data && chmod 700 data
   touch .env && chmod 600 .env
 
@@ -102,7 +105,8 @@ EOF
 
   if [ -n "$hostname" ]; then
     say "Setting up Cloudflare for $hostname"
-    CLOUDFLARE_API_TOKEN=$token docker run --rm --user 0 --entrypoint node -e CLOUDFLARE_API_TOKEN -e ORRERY_ALLOW_IPS \
+    # The token goes in on stdin: it is in no command line, environment or container description.
+    printf '%s' "$token" | docker run --rm -i --user 0 --entrypoint node -e ORRERY_ALLOW_IPS \
       -v "$PWD":/deploy orrery:local /deploy/cloudflare.mjs "$hostname" /deploy/.env || die "Nothing was started. Fix the problem above and run this again."
     token=""
   fi
@@ -121,7 +125,8 @@ EOF
     printf '\nOrrery is updated and running.\n'
     return
   fi
-  # The connector token is shown only to a person at a terminal, never into a log or an assistant's transcript.
+  # The connector URL is shown only on a terminal, so it reaches no log and no pipe. A tool that runs
+  # this in a terminal of its own would still see it: the person, not an assistant, runs the installer.
   local secret="<token>"
   for _ in $(seq 30); do [ -s data/token ] && break; sleep 1; done
   if [ -t 1 ] && [ -s data/token ]; then secret=$(cat data/token); fi
@@ -137,7 +142,8 @@ EOF
   [ "$secret" != "<token>" ] || echo "     The token: cat $dir/deploy/data/token"
   cat <<EOF
 2. Delete the Cloudflare API token you created. It is not needed again.
-3. Add your cloud credentials (docs/providers.md), then ask your assistant to list your servers.
+3. Make this host's SSH key-only before it holds your cloud credentials: docs/deploy.md, step 9.
+4. Add your cloud credentials (docs/providers.md), then ask your assistant to list your servers.
 
 Clients on your own computer (Claude Code, Codex, Cursor) use https://$hostname/mcp with the header
 "Authorization: Bearer <token>" and need their IP allowed: docs/deploy.md, step 7.

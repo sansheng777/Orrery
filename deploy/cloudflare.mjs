@@ -1,11 +1,11 @@
 // Cloudflare side of an Orrery deployment, done through the API: a tunnel for the host, the public
 // hostname's route and DNS record, and the WAF rule that lets only the AI client's network reach it.
 // install.sh runs this once, inside the Orrery image:
-//   CLOUDFLARE_API_TOKEN=... node cloudflare.mjs <hostname> <env file>
-// It only adds things: an existing DNS record or WAF rule is never changed or replaced, and running it
-// again for the same hostname reuses what is there. The tunnel token goes straight into the env file
-// and is never printed. The API token needs: Account > Cloudflare Tunnel > Edit, and for the zone
-// Zone > Read, DNS > Edit and Zone WAF > Edit.
+//   printf %s "$TOKEN" | node cloudflare.mjs <hostname> <env file>
+// It touches only what is its own (see setup) and stops at anything for the hostname that it did not
+// create. Running it again reuses the tunnel with a new secret. The tunnel token goes straight into the
+// env file and is never printed. The API token needs: Account > Cloudflare Tunnel > Edit, and for the
+// zone Zone > Read, DNS > Edit and Zone WAF > Edit.
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -13,7 +13,7 @@ const API = "https://api.cloudflare.com/client/v4";
 const CLAUDE_AI = "160.79.104.0/21"; // Anthropic's egress range: where claude.ai connectors call from
 const SERVICE = "http://orrery:8787"; // the agent, by its compose service name
 const HOSTNAME = /^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-const IP_OR_CIDR = /^(\d{1,3}(\.\d{1,3}){3}|[0-9a-f:]*:[0-9a-f:]*)(\/\d{1,3})?$/i;
+const PHASE = "http_request_firewall_custom";
 
 // request({ method, path, query, body }) -> the API's `result`. A failure throws an Error with `status`.
 export function apiClient(token, fetchImpl = fetch) {
@@ -33,15 +33,33 @@ export function apiClient(token, fetchImpl = fetch) {
   };
 }
 
-export const wafExpression = (hostname, allowIps = []) => `(http.host eq "${hostname}" and not ip.src in {${[CLAUDE_AI, ...allowIps].join(" ")}})`;
+// An address or a small range that may reach the hostname besides claude.ai. Wide ranges are refused:
+// "0.0.0.0/0" would switch the rule off, and that is too easy to suggest as a fix for a 403.
+export function allowedSource(value) {
+  const [ip, prefix, ...rest] = String(value).split("/");
+  const bits = prefix === undefined ? null : /^\d{1,3}$/.test(prefix) ? Number(prefix) : NaN;
+  const v4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(ip) && ip.split(".").every((n) => Number(n) <= 255);
+  const v6 = !v4 && /^[0-9a-f:]{2,39}$/i.test(ip) && ip.includes(":");
+  if (rest.length || (!v4 && !v6) || Number.isNaN(bits) || bits > (v4 ? 32 : 128)) throw new Error(`Not an IP address or range: "${value}"`);
+  if (bits !== null && bits < (v4 ? 24 : 48)) {
+    throw new Error(`${value} is too wide. Give single addresses, or ranges up to /24 (IPv4) or /48 (IPv6); a wider range can only be set by hand in Cloudflare.`);
+  }
+  return String(value).toLowerCase();
+}
 
-// Returns { zone, tunnelId, tunnelToken }. allowIps: more addresses or CIDRs that may reach the hostname.
+export const wafExpression = (hostname, allowIps = []) => `(http.host eq "${hostname}" and not ip.src in {${[CLAUDE_AI, ...allowIps].join(" ")}})`;
+const ruleNote = (hostname) => `Orrery: only the AI client may reach ${hostname}`;
+const newSecret = () => btoa(String.fromCharCode(...globalThis.crypto.getRandomValues(new Uint8Array(32))));
+
+// Returns { zone, tunnelId, tunnelToken }. allowIps: more addresses or small ranges that may reach the hostname.
+// What it touches in Cloudflare is its own: the tunnel named after the hostname, that hostname's DNS
+// record, and the one firewall rule it describes as Orrery's. A DNS record or a rule for the hostname
+// that it did not create stops the run before anything is changed.
 export async function setup({ request, hostname, allowIps = [], log = () => {} }) {
   if (!HOSTNAME.test(hostname)) throw new Error(`Not a hostname: "${hostname}". Use lowercase, such as orrery.example.com.`);
-  const badIp = allowIps.find((ip) => !IP_OR_CIDR.test(ip));
-  if (badIp) throw new Error(`Not an IP address or CIDR: "${badIp}"`);
+  const sources = allowIps.map(allowedSource);
 
-  // Everything is read before anything is changed, so a conflict stops the run with nothing half done.
+  // First everything is read, so that a conflict stops the run with nothing changed.
   const zones = [];
   for (let page = 1; ; page++) {
     const batch = await request({ path: "/zones", query: { per_page: 50, page } });
@@ -55,37 +73,56 @@ export async function setup({ request, hostname, allowIps = [], log = () => {} }
 
   const tunnels = await request({ path: `/accounts/${account}/cfd_tunnel`, query: { name: hostname, is_deleted: false } });
   let tunnel = tunnels.find((t) => t.name === hostname);
+  const reused = !!tunnel;
   const target = (id) => `${id}.cfargotunnel.com`;
   const records = (await request({ path: `/zones/${zone.id}/dns_records`, query: { name: hostname } })).filter((r) => r.name === hostname);
   const ours = tunnel && records.find((r) => r.type === "CNAME" && r.content === target(tunnel.id));
   const foreign = records.find((r) => r !== ours && ["A", "AAAA", "CNAME"].includes(r.type));
   if (foreign) throw new Error(`${hostname} already has a DNS record (${foreign.type} ${foreign.content}). Remove it in Cloudflare or choose another hostname; nothing was changed.`);
 
-  if (tunnel) log(`Tunnel "${hostname}" exists, reusing it`);
-  else {
+  const want = { action: "block", expression: wafExpression(hostname, sources), description: ruleNote(hostname), enabled: true };
+  const entry = await request({ path: `/zones/${zone.id}/rulesets/phases/${PHASE}/entrypoint` }).catch((e) => (e.status === 404 ? null : Promise.reject(e)));
+  const naming = (entry?.rules || []).filter((r) => String(r.expression || "").includes(`"${hostname}"`));
+  const mine = naming.find((r) => r.description === want.description);
+  const theirs = naming.find((r) => r !== mine);
+  if (theirs) {
+    throw new Error(
+      `Cloudflare already has a custom rule for ${hostname} that this installer did not create (${theirs.action}, ${theirs.enabled === false ? "disabled" : "enabled"}: ${theirs.expression}). ` +
+        `It could let requests past Orrery's rule. Remove it or choose another hostname; nothing was changed.`,
+    );
+  }
+
+  // From here on things change. A failure leaves what was made so far; the same command picks it up.
+  if (reused) {
+    // A token from an earlier run (an old host, a copied .env) must not connect to this tunnel again.
+    await request({ method: "PATCH", path: `/accounts/${account}/cfd_tunnel/${tunnel.id}`, body: { tunnel_secret: newSecret() } });
+    await request({ method: "DELETE", path: `/accounts/${account}/cfd_tunnel/${tunnel.id}/connections` }).catch(() => {});
+    log(`Tunnel "${hostname}" exists: reusing it with a new secret, so earlier tunnel tokens stop working`);
+  } else {
     tunnel = await request({ method: "POST", path: `/accounts/${account}/cfd_tunnel`, body: { name: hostname, config_src: "cloudflare" } });
     log(`Tunnel "${hostname}" created`);
   }
-  await request({
-    method: "PUT",
-    path: `/accounts/${account}/cfd_tunnel/${tunnel.id}/configurations`,
-    body: { config: { ingress: [{ hostname, service: SERVICE }, { service: "http_status:404" }] } },
-  });
+  // The route to the agent comes first; other hostnames someone added to this tunnel are kept.
+  const current = reused ? (await request({ path: `/accounts/${account}/cfd_tunnel/${tunnel.id}/configurations` }))?.config || {} : {};
+  const routes = Array.isArray(current.ingress) ? current.ingress : [];
+  if (!routes.some((r) => r.hostname === hostname && r.service === SERVICE)) {
+    const ingress = [{ hostname, service: SERVICE }, ...routes.filter((r) => r.hostname && r.hostname !== hostname), routes.find((r) => !r.hostname) || { service: "http_status:404" }];
+    await request({ method: "PUT", path: `/accounts/${account}/cfd_tunnel/${tunnel.id}/configurations`, body: { config: { ...current, ingress } } });
+  }
   log(`Route ${hostname} -> ${SERVICE}`);
 
-  // The WAF rule comes before the DNS record, so the hostname is never reachable without it.
-  const rule = { action: "block", expression: wafExpression(hostname, allowIps), description: `Orrery: only the AI client may reach ${hostname}`, enabled: true };
-  const phase = "http_request_firewall_custom";
-  const entry = await request({ path: `/zones/${zone.id}/rulesets/phases/${phase}/entrypoint` }).catch((e) => (e.status === 404 ? null : Promise.reject(e)));
+  // The firewall rule comes before the DNS record, so the hostname is never reachable without it, and
+  // it goes first in the zone's list, so no earlier "skip" rule can let a request past it.
+  const first = { position: { index: 1 } };
   if (!entry) {
-    await request({ method: "POST", path: `/zones/${zone.id}/rulesets`, body: { name: "default", kind: "zone", phase, rules: [rule] } });
-    log("WAF rule added (the zone's first custom rule)");
-  } else if ((entry.rules || []).some((r) => r.expression?.includes(`http.host eq "${hostname}"`))) {
-    log("A WAF rule for this hostname exists, leaving it as it is");
-  } else {
-    await request({ method: "POST", path: `/zones/${zone.id}/rulesets/${entry.id}/rules`, body: rule });
-    log("WAF rule added");
+    await request({ method: "POST", path: `/zones/${zone.id}/rulesets`, body: { name: "default", kind: "zone", phase: PHASE, rules: [want] } });
+  } else if (!mine) {
+    await request({ method: "POST", path: `/zones/${zone.id}/rulesets/${entry.id}/rules`, body: { ...want, ...first } });
+  } else if (mine.action !== want.action || mine.enabled === false || mine.expression !== want.expression || entry.rules[0] !== mine) {
+    // Cloudflare refuses a position the rule already has, so it is only given when the rule must move.
+    await request({ method: "PATCH", path: `/zones/${zone.id}/rulesets/${entry.id}/rules/${mine.id}`, body: entry.rules[0] === mine ? want : { ...want, ...first } });
   }
+  log(`Firewall rule in place: ${hostname} can be reached only from ${[CLAUDE_AI, ...sources].join(", ")}`);
 
   if (ours) log("DNS record exists");
   else {
@@ -106,9 +143,10 @@ export function writeTunnelToken(file, token) {
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
   const [hostname, envFile] = process.argv.slice(2);
-  const token = process.env.CLOUDFLARE_API_TOKEN;
+  // The API token comes on stdin, so it is in no command line, environment or container description.
+  const token = (process.env.CLOUDFLARE_API_TOKEN || (process.stdin.isTTY ? "" : fs.readFileSync(0, "utf8"))).trim();
   try {
-    if (!hostname || !envFile || !token) throw new Error("Usage: CLOUDFLARE_API_TOKEN=... node cloudflare.mjs <hostname> <env file>");
+    if (!hostname || !envFile || !token) throw new Error("Usage: printf %s \"$TOKEN\" | node cloudflare.mjs <hostname> <env file>");
     const allowIps = (process.env.ORRERY_ALLOW_IPS || "").split(/[\s,]+/).filter(Boolean);
     const done = await setup({ request: apiClient(token), hostname, allowIps, log: (line) => console.error(`   ${line}`) });
     writeTunnelToken(envFile, done.tunnelToken);

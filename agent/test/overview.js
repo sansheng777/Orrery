@@ -58,7 +58,7 @@ assert.deepEqual(overviewRow({ ...host, state: "stopped" }), { server: "`orrery-
   assert.equal(tableLines[2].split("|").length, 11, "nine cells");
   assert.equal(row.server, "`evil name injected row` (203.0.113.9onloadxb)");
   assert.match(row.attention[0], /^`[^`]*`$/, "the error is one code span");
-  assert.ok(!/[\u0000-\u001f\u202e]/.test(tableLines[2]), "no control or direction characters");
+  assert.ok(!/[\p{Cc}\p{Cf}]/u.test(tableLines[2]), "no control or direction characters");
 
   // A server with thousands of full disks or stopped containers still gets a short cell.
   const noisy = overviewRow({ id: "n", name: "n", host: "203.0.113.4" }, { disks: Array.from({ length: 5000 }, (_, i) => ({ mount: `/m${i}`, percent: 99, total: 1 })) });

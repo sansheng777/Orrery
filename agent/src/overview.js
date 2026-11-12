@@ -11,7 +11,7 @@ const MAX_ATTENTION = 4; // items per server; the rest are counted
 // client renders no link, image or HTML. A host is cut down to the characters an address can have.
 const literal = (v, max) =>
   String(v ?? "")
-    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]+/g, " ")
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")
     .replace(/[|`\\]+/g, " ")
     .replace(/\s+/g, " ")
     .trim()
