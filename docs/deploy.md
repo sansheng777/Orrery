@@ -21,10 +21,10 @@ curl -fsSL https://raw.githubusercontent.com/sansheng777/Orrery/main/deploy/inst
 Run it in your own terminal, with your hostname. It asks for a Cloudflare API token (typed hidden, used for this run only, stored nowhere) and then does steps 1, 2, 4 and 7 below: Docker, 2 GB of swap if the host has none, the tunnel with its route and DNS record, a WAF rule that lets only claude.ai reach the hostname, and Orrery itself. It ends with the URL for step 6.
 
 - The token: My Profile > API Tokens > Create Token > Create Custom Token, with Account > Cloudflare Tunnel > Edit and, for your domain, Zone > Zone > Read, DNS > Edit and Zone WAF > Edit. Delete it when the script is done.
-- It only adds things in Cloudflare. A hostname that already has a DNS record is refused, and existing WAF rules are left as they are.
-- For clients on your own computer, let their addresses reach the hostname too, with the variable after the `|`: `curl ... | ORRERY_ALLOW_IPS="203.0.113.30 198.51.100.0/24" bash -s -- orrery.example.com`. This applies when the rule is created; later, edit the rule (step 7).
-- `CLOUDFLARE_API_TOKEN` replaces the prompt. The connector URL is shown only when the output is a terminal.
-- Run again without a hostname, it updates Orrery. Its log is `/var/log/orrery-install.log`.
+- In Cloudflare it touches only what is its own: the tunnel named after the hostname, that hostname's DNS record, and one firewall rule, which it puts first so that no earlier "skip" rule lets requests past it. A DNS record or a custom rule for the hostname that it did not create stops it before anything is changed.
+- For clients on your own computer, let their addresses reach the hostname too, with the variable after the `|`: `curl ... | ORRERY_ALLOW_IPS="203.0.113.30 198.51.100.0/24" bash -s -- orrery.example.com`. Single addresses, or ranges up to /24 (IPv4) or /48 (IPv6); a later run with the hostname brings the rule up to date. No fixed address: use Cloudflare Access instead (step 7, option B).
+- Run again with the hostname, it repairs what it made and gives the tunnel a new secret, so a tunnel token from an old host or a copied `.env` stops working; Orrery is unreachable for about a minute. Run again without a hostname, it only updates Orrery. Its log is `/var/log/orrery-install.log`.
+- `CLOUDFLARE_API_TOKEN` replaces the prompt, at the price of the token landing in your shell history: prefer the prompt. The connector URL is shown only when the output is a terminal.
 
 Then continue with step 3 (cloud credentials), step 6 (your AI client and its tool permissions) and steps 8 to 10 (check, harden SSH, onboard your servers). The rest of this page is the same setup by hand.
 
@@ -56,8 +56,10 @@ The tunnel connects outbound from the host, so the host opens no inbound port an
 3. Save the token. Every `docker compose` command fails until it is set.
 
    ```bash
-   echo "TUNNEL_TOKEN=<tunnel token>" > .env && chmod 600 .env
+   (umask 077; read -rsp "Tunnel token: " T && echo "TUNNEL_TOKEN=$T" > .env)
    ```
+
+   Typed this way it stays out of your shell history.
 
 4. Add a public hostname (published application route) to the tunnel: subdomain `orrery`, your domain, type `HTTP`, URL `orrery:8787`.
 
@@ -139,6 +141,8 @@ Every Claude user shares this range, which is why the token still matters. The r
 - create a self-hosted Cloudflare Access application for the hostname with a Service Auth policy and a service token. Clients then also send `CF-Access-Client-Id` and `CF-Access-Client-Secret`. claude.ai cannot send them, so add a Bypass policy for `160.79.104.0/21` if you use it too.
 
 To debug from your computer with Option A, add your IP to the rule for a while.
+
+Keep the rule first in the list: a custom rule above it with the action Skip can let requests past it. An IP Access rule with the action Allow (Security → WAF → Tools) bypasses custom rules altogether, so do not allow addresses there that should not reach Orrery.
 
 ## 8. Check that it works
 

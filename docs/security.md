@@ -4,7 +4,7 @@ Orrery gives an AI assistant control over every server you own. This page covers
 
 ## What is at stake
 
-The Orrery host holds credentials for every configured cloud account, the connector token, and one SSH private key that every monitored server trusts, usually as root. Whoever controls the host controls all of that. Run it on a dedicated VPS with key-only SSH and nothing else on it.
+The Orrery host holds credentials for every configured cloud account, the connector token, the tunnel token that lets a machine answer at Orrery's public hostname, and one SSH private key that every monitored server trusts, usually as root. Whoever controls the host controls all of that. Run it on a dedicated VPS with key-only SSH and nothing else on it.
 
 ## Layers of protection
 
@@ -133,10 +133,12 @@ Everything else is logged as given, including the full `command` of `run_command
 
 ## SSH host keys
 
-Orrery pins each server's SSH host key on the first connection and keeps the fingerprints in `data/known_hosts.json`. Every later connection must present a pinned key. If it does not, Orrery stops before it sends a login or a command, and the error shows the expected and the presented fingerprint.
+Orrery pins each server's SSH host key on the first connection, once the server has proved it holds the key, and keeps the fingerprints in `data/known_hosts.json`. Every later connection must present a pinned key. If it does not, Orrery stops before it sends a login or a command, and the error shows the expected and the presented fingerprint.
 
-- **A key changes when a server is reinstalled or replaced.** Confirm that this is what happened, then accept the new key with `accept_host_key` (a D tool, audited). If nothing was reinstalled, something else may be answering at the server's address: compare first. On the server, through the provider's web console, `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` prints its fingerprint; `server_stats` returns the pinned ones as `hostKeys`.
-- **Pins belong to the server id, not the address.** A machine keeps its pin when its IP changes, and a new machine that inherits an IP starts fresh. Changing a saved server's host or port, or removing it, forgets its pin.
+- **A key changes when a server is reinstalled or replaced.** Confirm that this is what happened, then accept the new key with `accept_host_key` (a D tool, audited). It takes only a key Orrery itself refused for that server within the last hour, so text that merely looks like a refusal cannot get another key accepted. If nothing was reinstalled, something else may be answering at the server's address: compare first. On the server, through the provider's web console, `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` prints its fingerprint; `server_stats` returns the pinned ones as `hostKeys`.
+- **Pins belong to the server id, not the address.** A machine keeps its pin when its IP changes, and a new machine that inherits an IP starts fresh. No edit of a saved server drops its pin, and a server saved for a listed address keeps that address's pins; only removing a server forgets them.
+- **Onboarding stops at a changed key.** `ssh_bootstrap` pushes no key, changes no metadata and restarts nothing on a machine whose host key is refused.
+- **A pin file that cannot be read refuses every connection.** It never falls back to trusting whatever answers. Restore `data/known_hosts.json`, or delete it to pin every server afresh.
 - **Lightsail keys are verified, not just trusted.** Onboarding checks the temporary login against the host keys AWS recorded for the instance, then pins those.
 
 What this does not cover: the first connection to any other server is trusted as it is (trust on first use), so someone who intercepts that one connection is pinned in the server's place. netcup's rescue system has its own key and is not checked; that path is off by default.
@@ -209,13 +211,26 @@ The baseline does not cover the cloud accounts themselves (turn on two-factor au
 
 ### Connector token
 
+In a terminal on the host, not through `run_command`, which would put the new token into the chat:
+
 ```bash
 cd ~/orrery/deploy
 rm data/token && docker compose restart orrery
-cat data/token
+until [ -s data/token ]; do sleep 1; done; cat data/token
 ```
 
 The old token stops working at once. Update every client. If you use `ORRERY_TOKEN` in `deploy/.env`, change it there and run `docker compose up -d`.
+
+Where the connector token turns up besides `data/token`: cloudflared writes the full connector URL, token included, into its log whenever the agent does not answer (`docker compose logs tunnel`). Orrery removes its own token from every tool result, so `container_logs` and `run_command` do not hand it to an assistant. Outside Orrery, hide it yourself before you share those logs: `docker compose logs --tail 30 tunnel | sed -E 's#/mcp/[A-Za-z0-9_-]+#/mcp/[hidden]#g'`.
+
+### Tunnel token
+
+`TUNNEL_TOKEN` in `deploy/.env` lets a machine connect to the tunnel and answer at Orrery's hostname, behind the firewall rule. Someone who has it could receive requests, connector token included. Replace it whenever the host or `.env` may have leaked, and when you move Orrery to another machine:
+
+- With the installer: run it again with the hostname ([deploy.md](deploy.md#the-short-way)). It gives the tunnel a new secret, drops every connection made with the old one, and writes the new token. Orrery is unreachable for about a minute.
+- By hand: in Cloudflare, open the tunnel, refresh its token, put the new one into `.env`, and run `docker compose up -d`.
+
+`docker inspect` and `docker compose config` print the tunnel token. Do not run them through `run_command`.
 
 **Cloud credentials:** follow the provider's "Rotate or revoke" step in [providers.md](providers.md). Revoke at the provider first.
 

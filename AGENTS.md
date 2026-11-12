@@ -34,7 +34,7 @@ Three rules for the whole setup:
 - No VPS: they rent one first, at any provider, with Debian 12 or Ubuntu 24.04 and at least that size. Wait until they have it. (Without a VPS there is only the local mode in "Connect a client", which can read but not control.) The 2 GB of swap Orrery wants is added by the installer.
 - The VPS already runs other things: advise a separate one. Orrery will hold the keys to all their servers.
 - The domain is not on Cloudflare: they add it at dash.cloudflare.com (Add a domain) and switch its nameservers at their registrar first. The installer cannot work until Cloudflare shows the domain as active.
-- A tool on their own computer: also ask for their public IP address (it must be a fixed one). It is THEIR_IP in step 4.
+- A tool on their own computer: also ask for their public IP address. It is THEIR_IP in step 4, and it must be a fixed one: a single address, or a range no wider than /24. Without a fixed address the installer cannot let them in; they need Cloudflare Access instead (`docs/deploy.md`, step 7, option B). Never suggest a wide range such as `0.0.0.0/0`: the installer refuses it, because it would open Orrery to everyone.
 
 **Step 2. Agree on the hostname.** Propose `orrery.DOMAIN`, for example `orrery.example.com`. It must be a new name that has no DNS record yet. It is HOSTNAME from here on.
 
@@ -48,7 +48,8 @@ Three rules for the whole setup:
 >    - Zone > DNS > Edit
 >    - Zone > Zone WAF > Edit
 > 4. Under **Zone Resources**, choose Include > Specific zone > DOMAIN.
-> 5. Choose **Continue to summary**, then **Create Token**, and copy the token. You need it in the next step. Do not send it to me.
+> 5. Under **TTL**, set the end date to tomorrow, so the token expires by itself.
+> 6. Choose **Continue to summary**, then **Create Token**, and copy the token. You need it in the next step. Do not send it to me.
 
 **Step 4. The user runs the installer on the VPS.** Send this, with the line that fits their client:
 
@@ -58,6 +59,7 @@ Three rules for the whole setup:
 > 3. When it says `Paste the token (input hidden):`, paste the Cloudflare token and press Enter. Nothing appears while you paste. That is normal.
 > 4. Wait about five minutes, until it prints `Orrery is running at https://HOSTNAME`. Then tell me it is done. If it stops with an error, send me only the error line.
 > 5. At the end it prints a URL that contains a secret. Do not send me that URL or the text around it.
+> 6. When it has finished, delete the `orrery-install` token in Cloudflare, on the page where you made it. It is not needed again.
 
 For a tool on their own computer, the line in point 2 is this one instead (the variable goes after the `|`):
 
@@ -83,7 +85,7 @@ The exact setting for each client is in `docs/deploy.md`, step 6. These clients 
 
 If you are the assistant in that new conversation: call `list_servers`, then `server_stats` with the id of `orrery-host`. If both answer, the setup works.
 
-**Step 8. Finish.** Tell the user to delete the `orrery-install` token in Cloudflare, on the page from step 3: it is not needed again. Then offer what comes next, one at a time: adding their cloud accounts (`docs/providers.md`), making the host's SSH key-only (`docs/deploy.md`, step 9), onboarding their other servers (`ssh_bootstrap`), publishing the dashboard.
+**Step 8. Finish.** Check that the user deleted the `orrery-install` token in Cloudflare. Then do what comes next, one thing at a time and in this order: making the host's SSH key-only (`docs/deploy.md`, step 9), which comes first because the host is about to hold the keys to everything; adding their cloud accounts (`docs/providers.md`); onboarding their other servers (`ssh_bootstrap`); publishing the dashboard.
 
 If a step fails:
 
@@ -94,14 +96,16 @@ If a step fails:
 | `Cloudflare did not accept the API token` | The token was cut off or is not active. Create a new one (step 3) and run the line again |
 | `The API token sees no zone for ...` | In step 3, Zone Resources must include that domain, and the domain must be active on Cloudflare |
 | `... already has a DNS record` | Choose another HOSTNAME, or delete that record in Cloudflare. Nothing was changed |
+| `... already has a custom rule for ... that this installer did not create` | A firewall rule in Cloudflare names this hostname and could let requests past Orrery's. They remove it (Security → WAF → Custom rules) or choose another HOSTNAME. Nothing was changed |
+| `... is too wide` | `ORRERY_ALLOW_IPS` takes single addresses, or ranges up to /24. Give the user's own fixed address |
 | `No terminal to ask for the Cloudflare API token` | The line was started by a tool, not by a person. The user runs it in their own session on the VPS |
 | `Failed: ... (full log: /var/log/orrery-install.log)` | Ask for the output of `tail -n 30 /var/log/orrery-install.log`. It holds no secrets |
-| `Not connected yet` under "Waiting for the tunnel" | Ask for the output of `cd ~/orrery/deploy && docker compose logs --tail 30 tunnel` |
+| `Not connected yet` under "Waiting for the tunnel" | Ask for the output of this, which hides the secret the log can contain: `cd ~/orrery/deploy && docker compose logs --tail 30 tunnel \| sed -E 's#/mcp/[A-Za-z0-9_-]+#/mcp/[hidden]#g'` |
 | The client cannot connect, or gets 403 | Only claude.ai and the addresses given in step 4 may reach the hostname. To allow another address later, edit the WAF rule in Cloudflare: `docs/deploy.md`, step 7 |
 | The Orrery tools do not appear | Open a new conversation |
-| The user sent you the URL or a token | Do not repeat it. A Cloudflare token: they delete it and create a new one. The connector URL: before step 5 they run `cd ~/orrery/deploy && rm data/token && docker compose restart orrery && cat data/token` on the VPS, which prints a new secret; the URL is `https://HOSTNAME/mcp/` followed by it, and the old one stops working |
+| The user sent you the URL or a token | Do not repeat it. A Cloudflare token: they delete it and create a new one. The connector URL: before step 5 they run `cd ~/orrery/deploy && rm data/token && docker compose restart orrery && until [ -s data/token ]; do sleep 1; done && cat data/token` on the VPS, which prints a new secret; the URL is `https://HOSTNAME/mcp/` followed by it, and the old one stops working |
 
-About the installer: it installs Docker, adds 2 GB of swap if there is none, creates the tunnel, its route, the DNS record and a WAF rule that lets only claude.ai (`160.79.104.0/21`) and `ORRERY_ALLOW_IPS` reach the hostname, then starts Orrery and makes the host trust its key. In Cloudflare it only adds things, and the API token is stored nowhere. It shows the connector URL only when its output is a terminal. Running the same line again is always safe: it reuses what it already created. Run without a hostname, it updates Orrery. The same setup by hand: `docs/deploy.md`.
+About the installer: it installs Docker, adds 2 GB of swap if there is none, creates the tunnel, its route, the DNS record and a firewall rule that lets only claude.ai (`160.79.104.0/21`) and `ORRERY_ALLOW_IPS` reach the hostname, then starts Orrery and makes the host trust its key. In Cloudflare it touches only what is its own, and stops at a DNS record or a rule for the hostname that it did not create. The API token is stored nowhere. It shows the connector URL only when its output is a terminal. Running the same line again is always safe: it repairs what it made and gives the tunnel a new secret, which takes Orrery offline for about a minute. Run without a hostname, it only updates Orrery. The same setup by hand: `docs/deploy.md`.
 
 ### Connect a client
 

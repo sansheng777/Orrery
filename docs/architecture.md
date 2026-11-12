@@ -91,12 +91,12 @@ Kind: R read-only, W changes something without deleting data, D can delete data,
 | `container_logs` | R | Last lines of a container's log (default 200, at most 2000) |
 | `run_command` | D | One shell command, no TTY. Timeout default 60 s, at most 300 s; output up to 512 KiB; command up to 8000 characters. Returns `output`, `exitCode`, `timedOut`, `truncated` and `cwd` (pass it back to continue there). A `cwd` that does not exist fails the call. A connection lost mid-command is an error |
 | `container_action` | D | Start, stop or restart a container |
-| `label_server` | W | Display name, role tags and a note. Changes nothing on the machine |
-| `ignore_server` | W | Hide a discovered server, or bring it back |
-| `add_server` | W | Save a server that is not discovered, or override a discovered one with the same IP (user, key, port). Without a password or `keyPath`, Orrery's key is used |
-| `update_server` | W | Change a saved server |
+| `label_server` | W | Display name, role tags and a note. Changes nothing on the machine. The tag `orrery-host` cannot be given by hand |
+| `ignore_server` | W | Hide a discovered server, or bring it back. The Orrery host cannot be hidden |
+| `add_server` | W | Save a server that is not discovered, or override a discovered one with the same IP (user, key, port). Without a password or `keyPath`, Orrery's key is used. It keeps the host keys pinned for that address |
+| `update_server` | W | Change a saved server. Its pinned host key stays: another machine at a new address is refused until `accept_host_key` |
 | `remove_server` | D | Remove a saved server from the list. Does not touch the machine |
-| `accept_host_key` | D | Pin the new SSH host key of a server that was reinstalled or replaced. `fingerprint` is the one in the refusal message |
+| `accept_host_key` | D | Pin the new SSH host key of a server that was reinstalled or replaced. `fingerprint` must be the one Orrery refused for that server within the last hour |
 
 Container names must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`. Docker commands fall back to `sudo -n docker`. A refused SSH channel (sshd's `MaxSessions`, 10 by default) fails that call only, with a message that says so; the shared connection stays. A connection with a command still running is not closed as idle.
 
@@ -200,6 +200,8 @@ Outside claude.ai there is no page. `fleet_overview` is the dashboard there: one
 | `enable-ssh.sh`: "Could not find this machine's public IPv4" | No interface has one and Cloudflare could not be asked. Add `ORRERY_SELF_IP=<public IPv4>` to `deploy/.env` and run it again |
 | `install.sh`: "Cloudflare did not accept the API token" | Paste the whole token, and check it is active and has the four permissions ([deploy.md](deploy.md#the-short-way)) |
 | `install.sh`: "already has a DNS record" | The hostname is in use. Remove the record in Cloudflare or choose another hostname; nothing was changed |
+| `install.sh`: "a custom rule ... that this installer did not create" | A firewall rule in Cloudflare names the hostname and could let requests past Orrery's. Remove it or choose another hostname; nothing was changed |
+| "its pinned host key cannot be checked" | `data/known_hosts.json` is unreadable or damaged, so no server is connected to. Restore it, or delete it to pin every server afresh |
 | `enable-ssh.sh`: "ORRERY_SELF_IP must be a plain IPv4 address" | Fix the value in `.env`. IPv6 is not accepted |
 | A provider returns 401, `invalid_grant`, `InvalidAccessKeyId` or `SignatureDoesNotMatch` | The credential was revoked, expired or deleted. Replace it ([providers.md](providers.md)); for netcup, sign in again |
 | Vultr or Kamatera: 401 or 403 with a valid key | The key's IP restriction does not include the Orrery host |
@@ -251,7 +253,7 @@ Outside claude.ai there is no page. `fleet_overview` is the dashboard there: one
 | `ORRERY_GCP_SSH_USER` | `orrery` | User that onboarding creates on Google Cloud |
 | `ORRERY_ALLOW_EXEC` | on | `0` removes `run_command` and `container_action` (hub role only) |
 | `ORRERY_NETCUP_RESCUE` | off | `1` enables netcup onboarding through rescue. Leave it off. Not passed by compose |
-| `ORRERY_ALLOW_IPS`, `ORRERY_HOME`, `CLOUDFLARE_API_TOKEN` | empty, `~/orrery`, prompt | Read by `install.sh` only: more addresses allowed to reach the hostname, where the checkout goes, the API token for that run |
+| `ORRERY_ALLOW_IPS`, `ORRERY_HOME`, `CLOUDFLARE_API_TOKEN` | empty, `~/orrery`, prompt | Read by `install.sh` only: more addresses allowed to reach the hostname (single ones, or ranges up to /24 or /48), where the checkout goes, the API token for that run |
 | `ORRERY_DIR` | `~/.orrery` (`/data` in the image) | Data directory |
 | `ORRERY_SSH_CONFIG` | `~/.ssh/config` | Extra host source for `list_servers` |
 | `PORT` | 8787 | HTTP port. Setting it also switches to HTTP |
