@@ -337,14 +337,15 @@ To release 1.2.3:
 
 1. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [1.2.3] - YYYY-MM-DD`, add a new empty `## [Unreleased]` above it, and update the links at the bottom.
 2. `npm version 1.2.3 --workspaces --include-workspace-root --no-git-tag-version`, then `npm test`.
-3. Commit (`Release 1.2.3`), tag and push: `git tag -a v1.2.3 -m "Orrery 1.2.3" && git push origin main v1.2.3`.
+3. Commit (`Release 1.2.3`) and push to main.
+4. Publish, either way: in GitHub, Actions → release → Run workflow on main with **publish** ticked, which creates the tag `v1.2.3` on that commit; or push the tag yourself: `git tag -a v1.2.3 -m "Orrery 1.2.3" && git push origin v1.2.3`.
 
-The tag starts `.github/workflows/release.yml`. It refuses a tag that does not match every `package.json` or has no `CHANGELOG.md` section (`scripts/release-notes.mjs`), runs the tests, and publishes:
+Either starts `.github/workflows/release.yml`. It refuses a tag that does not match every `package.json` or has no `CHANGELOG.md` section (`scripts/release-notes.mjs`), runs the tests, and publishes:
 
 - the image `ghcr.io/<owner>/orrery:1.2.3`, and `:latest` unless the tag is a pre-release such as `v1.2.3-rc.1`;
 - a GitHub release with the changelog section as notes and three files: `install.sh` stamped with the tag, so it installs exactly that release; `orrery.html`, the dashboard; and `SHA256SUMS`;
 - build provenance for the image and the files ([security.md](security.md#verifying-a-release)).
 
-Run the workflow by hand (Actions → release → Run workflow) for a dry run of the version in `package.json`: everything is checked and built, nothing is published. A published tag is never moved or deleted; a mistake gets a new patch release.
+Run it with **publish** unticked for a dry run: everything is checked and built, nothing is published. Publishing from the Actions tab refuses a version that already has a tag. A published tag is never moved or deleted; a mistake gets a new patch release.
 
 The compose file builds the image from the checkout and does not use the published one.
