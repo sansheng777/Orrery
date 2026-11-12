@@ -30,11 +30,12 @@ const PROVIDER_TOOL = /^(aws|netcup|linode|gcp|aliyun|vultr|digitalocean|kamater
 let client = await connect();
 // Instructions tell the model how to work with Orrery; ORRERY_INSTRUCTIONS=off leaves them out.
 assert.match(client.getInstructions() || "", /Start with list_servers/);
+assert.equal(client.getServerVersion().version, JSON.parse(fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version, "the version in package.json is the one clients see");
 assert.doesNotMatch(client.getInstructions(), /ssh_bootstrap, then/, "the read-only hub role does not mention onboarding");
 {
   const admin = await connect("admin");
   assert.match(admin.getInstructions() || "", /orrery-host/);
-  assert.match(admin.getInstructions(), /dashboard\/orrery\.html/);
+  assert.match(admin.getInstructions(), /releases\/download\/v\d+\.\d+\.\d+\/orrery\.html/, "the dashboard of the running release");
   await admin.close();
   const { instructionsFor, DASHBOARD_TOOLS } = await import("../src/instructions.js");
   assert.equal(instructionsFor("admin", { ORRERY_INSTRUCTIONS: "off" }), undefined);
@@ -56,7 +57,7 @@ assert.deepEqual(tools.filter((t) => PROVIDER_TOOL.test(t.name)).map((t) => t.na
   assert.equal(tools.find((x) => x.name === "fleet_overview").annotations?.readOnlyHint, true);
   const board = await client.callTool({ name: "fleet_overview", arguments: {} });
   assert.ok(!board.isError);
-  assert.match(board.content[0].text, /^Orrery overview, \d{4}-\d\d-\d\d \d\d:\d\d UTC\. 0 servers/);
+  assert.match(board.content[0].text, /^Orrery \d+\.\d+\.\d+ overview, \d{4}-\d\d-\d\d \d\d:\d\d UTC\. 0 servers/, "the running version is named");
   assert.ok(board.content[0].text.includes("| Server | State | CPU |"), "plain Markdown, not JSON");
   const { prompts } = await client.listPrompts();
   assert.deepEqual(prompts.map((p) => p.name), ["overview"]);

@@ -6,6 +6,7 @@ import { stats, runInDir, exec, quote, dropConnections } from "./ssh.js";
 import * as live from "./live.js";
 import * as hostKeys from "./hostkeys.js";
 import { buildOverview } from "./overview.js";
+import { VERSION } from "./version.js";
 import { registerProviders } from "./cloud.js";
 import { audited } from "./audit.js";
 import { createDiscovery } from "./discovery.js";
@@ -133,7 +134,7 @@ function registerCloudProviders(server, providers, role) {
 }
 
 function createAdminServer() {
-  const server = new McpServer({ name: "orrery", version: "0.5.0" }, { instructions: instructionsFor("admin") });
+  const server = new McpServer({ name: "orrery", version: VERSION }, { instructions: instructionsFor("admin") });
   const adminTool = (name, fn) => tool(audited(name, fn));
   registerCloudProviders(server, registerProviders(server, { z, tool, adminTool, READ, WRITE, DESTRUCTIVE, admin: true }), "admin");
   registerSshTools(server, { allowExec: true, change: adminTool, onboarding: true });
@@ -142,7 +143,7 @@ function createAdminServer() {
 }
 
 function createHubServer() {
-  const server = new McpServer({ name: "orrery-local", version: "0.5.0" }, { instructions: instructionsFor("hub") });
+  const server = new McpServer({ name: "orrery-local", version: VERSION }, { instructions: instructionsFor("hub") });
   registerSshTools(server, { allowExec: ALLOW_EXEC, change: (name, fn) => tool(fn) });
   // Cloud provider views. This connector only gets their read tools, whatever ORRERY_ALLOW_EXEC
   // says; starting, stopping or deleting machines is only on the admin connector.
@@ -344,7 +345,7 @@ function registerSshTools(server, { allowExec, change, onboarding = false }) {
         // Callers that ask at the same time share one round of probes.
         overview ||= discovery
           .list()
-          .then(({ servers, errors }) => buildOverview({ servers, errors, probe: (s) => probe(s.id, stats) }))
+          .then(({ servers, errors }) => buildOverview({ servers, errors, version: VERSION, probe: (s) => probe(s.id, stats) }))
           .finally(() => (overview = null));
         return { content: [{ type: "text", text: scrub(await overview) }] };
       } catch (err) {

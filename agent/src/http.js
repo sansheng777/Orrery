@@ -8,6 +8,7 @@ import crypto from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createServer, hideFromResults, ROLE } from "./server.js";
 import { DATA_DIR } from "./inventory.js";
+import { VERSION } from "./version.js";
 
 const MAX_BODY = 1024 * 1024;
 
@@ -123,7 +124,7 @@ export async function startHttp({ port = Number(process.env.PORT) || 8787, host 
   );
   await new Promise((resolve) => httpServer.listen(port, host, resolve));
   const addr = httpServer.address();
-  console.error(`orrery listening on http://${host}:${addr.port}/mcp/<token> (or /mcp with "Authorization: Bearer <token>")`);
+  console.error(`orrery ${VERSION} listening on http://${host}:${addr.port}/mcp/<token> (or /mcp with "Authorization: Bearer <token>")`);
   // The token itself is never logged: anyone who can read the logs could otherwise use every tool.
   const where = process.env.ORRERY_TOKEN ? "ORRERY_TOKEN" : path.join(DATA_DIR, "token");
   console.error(`connector URL: https://<your host>/mcp/<token>, token in ${where} (keep it secret: it unlocks every tool${ROLE === "admin" ? ", including starting, stopping and deleting cloud servers" : ""})`);

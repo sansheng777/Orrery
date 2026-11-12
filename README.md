@@ -1,5 +1,9 @@
 # Orrery
 
+[![test](https://github.com/sansheng777/Orrery/actions/workflows/test.yml/badge.svg)](https://github.com/sansheng777/Orrery/actions/workflows/test.yml)
+[![release](https://img.shields.io/github/v/release/sansheng777/Orrery?sort=semver)](https://github.com/sansheng777/Orrery/releases/latest)
+[![license](https://img.shields.io/github/license/sansheng777/Orrery)](LICENSE)
+
 Orrery is a self-hosted MCP server for your servers across many clouds. It runs on a small machine you own, finds every server in your cloud accounts, gets SSH access to them, and gives your AI assistant tools to watch, run commands on, and control them. Cloud credentials and the SSH key stay on that machine. The assistant only sees tool results.
 
 AI agents: start with [AGENTS.md](AGENTS.md). It has the deploy commands, client setup, dashboard publishing and operating rules.
@@ -56,10 +60,12 @@ New machines need no onboarding if they get Orrery's public key at creation ([Ne
 On the Orrery host, as root, with the hostname you want Orrery to have:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sansheng777/Orrery/main/deploy/install.sh | bash -s -- orrery.example.com
+curl -fsSL https://github.com/sansheng777/Orrery/releases/latest/download/install.sh | bash -s -- orrery.example.com
 ```
 
 It asks once for a Cloudflare API token, typed hidden and used for that run only, and does the rest: Docker, swap, the Cloudflare tunnel with its DNS record and firewall rule, and Orrery itself. At the end it shows the URL to add to your AI client. What it does, step by step, and how to do it by hand: [docs/deploy.md](docs/deploy.md).
+
+It installs the latest release. To update later, run the same line without the hostname. What changed in each release: [CHANGELOG.md](CHANGELOG.md).
 
 To try it without a server, run `npm install && node agent/src/index.js` on your computer. This local `hub` role offers the SSH tools and read-only cloud listings ([Running locally](docs/architecture.md#running-locally)).
 
@@ -82,7 +88,8 @@ Read [docs/security.md](docs/security.md) before you deploy.
 | [docs/providers.md](docs/providers.md) | Credentials and permissions for each provider |
 | [docs/security.md](docs/security.md) | Security model, protected machines, refusals, audit log, key rotation |
 | [docs/architecture.md](docs/architecture.md) | Request path, roles, tool reference, discovery and onboarding, dashboard, troubleshooting, pitfalls, configuration, code layout, tests |
-| [SECURITY.md](SECURITY.md) | Reporting a vulnerability |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each release |
+| [SECURITY.md](SECURITY.md) | Reporting a vulnerability, supported versions |
 
 ## License
 

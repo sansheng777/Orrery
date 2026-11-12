@@ -79,6 +79,7 @@ assert.deepEqual(overviewRow({ ...host, state: "stopped" }), { server: "`orrery-
   assert.ok(text.includes("2 more servers are not shown"));
   assert.ok(text.includes("Provider aws did not answer: `AuthFailure`"));
   assert.match(overviewText([], {}), /0 servers.*Nothing needs attention[\s\S]*No servers yet/);
+assert.match(overviewText([], { version: "1.2.3" }), /^Orrery 1\.2\.3 overview, /);
 }
 
 // buildOverview asks every server at once, survives failures and slow servers, and skips stopped ones.

@@ -282,6 +282,7 @@ The deployed container does not receive these. Use the files in `data/`.
 | `agent/src/server.js`, `instructions.js` | Tools and MCP instructions per role |
 | `agent/src/ssh.js`, `hostkeys.js`, `live.js` | SSH pool, stats script, command execution; pinned host keys; live samplers behind `server_pulse` |
 | `agent/src/overview.js` | The board `fleet_overview` returns |
+| `agent/src/version.js` | The version, read from the root `package.json` |
 | `agent/src/discovery.js`, `cloud.js` | Discovery, ids, labels, the `orrery-host` tag; provider loading and matching resources to servers by IP |
 | `agent/src/bootstrap.js`, `keys.js` | `ssh_bootstrap` jobs per provider; Orrery's SSH key |
 | `agent/src/inventory.js`, `audit.js` | `servers.json` and `~/.ssh/config`; audit log and redaction |
@@ -328,4 +329,22 @@ cd agent && SMOKE_HOST=203.0.113.30 SMOKE_USER=root SMOKE_KEY=~/.ssh/id_ed25519 
 
 Add `SMOKE_TRANSPORT=http` to go through the HTTP endpoint, `ORRERY_ALLOW_EXEC=0` for the read-only tool set, or `ORRERY_ROLE=admin` for the deployed role. `SMOKE_PORT` defaults to 22. The smoke test uses a fresh data directory and drops every provider variable, so it never touches a real account. Over HTTP it also checks that a wrong token gets 404 and that the token never appears in the log.
 
-Pushing a tag `v1.2.3` runs the tests and publishes `ghcr.io/<owner>/orrery:1.2.3` and `:latest`. The compose file does not use that image: it builds from the checkout. Pre-release tags such as `v1.2.3-rc.1` do not move `:latest`.
+### Releases
+
+Versions follow [Semantic Versioning](https://semver.org): until 1.0.0, a minor version may change tools or configuration, and `CHANGELOG.md` says what to do when updating. One version is shared by the root `package.json` and every workspace; the agent reads it from there (`agent/src/version.js`) and reports it at connect, in its startup line and in `fleet_overview`.
+
+To release 1.2.3:
+
+1. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [1.2.3] - YYYY-MM-DD`, add a new empty `## [Unreleased]` above it, and update the links at the bottom.
+2. `npm version 1.2.3 --workspaces --include-workspace-root --no-git-tag-version`, then `npm test`.
+3. Commit (`Release 1.2.3`), tag and push: `git tag -a v1.2.3 -m "Orrery 1.2.3" && git push origin main v1.2.3`.
+
+The tag starts `.github/workflows/release.yml`. It refuses a tag that does not match every `package.json` or has no `CHANGELOG.md` section (`scripts/release-notes.mjs`), runs the tests, and publishes:
+
+- the image `ghcr.io/<owner>/orrery:1.2.3`, and `:latest` unless the tag is a pre-release such as `v1.2.3-rc.1`;
+- a GitHub release with the changelog section as notes and three files: `install.sh` stamped with the tag, so it installs exactly that release; `orrery.html`, the dashboard; and `SHA256SUMS`;
+- build provenance for the image and the files ([security.md](security.md#verifying-a-release)).
+
+Run the workflow by hand (Actions → release → Run workflow) for a dry run of the version in `package.json`: everything is checked and built, nothing is published. A published tag is never moved or deleted; a mistake gets a new patch release.
+
+The compose file builds the image from the checkout and does not use the published one.

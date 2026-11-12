@@ -15,7 +15,7 @@ All commands run as root on the Orrery host.
 ## The short way
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sansheng777/Orrery/main/deploy/install.sh | bash -s -- orrery.example.com
+curl -fsSL https://github.com/sansheng777/Orrery/releases/latest/download/install.sh | bash -s -- orrery.example.com
 ```
 
 Run it in your own terminal, with your hostname. It asks for a Cloudflare API token (typed hidden, used for this run only, stored nowhere) and then does steps 1, 2, 4 and 7 below: Docker, 2 GB of swap if the host has none, the tunnel with its route and DNS record, a WAF rule that lets only claude.ai reach the hostname, and Orrery itself. It ends with the URL for step 6.
@@ -23,7 +23,8 @@ Run it in your own terminal, with your hostname. It asks for a Cloudflare API to
 - The token: My Profile > API Tokens > Create Token > Create Custom Token, with Account > Cloudflare Tunnel > Edit and, for your domain, Zone > Zone > Read, DNS > Edit and Zone WAF > Edit. Delete it when the script is done.
 - In Cloudflare it touches only what is its own: the tunnel named after the hostname, that hostname's DNS record, and one firewall rule, which it puts first so that no earlier "skip" rule lets requests past it. A DNS record or a custom rule for the hostname that it did not create stops it before anything is changed.
 - For clients on your own computer, let their addresses reach the hostname too, with the variable after the `|`: `curl ... | ORRERY_ALLOW_IPS="203.0.113.30 198.51.100.0/24" bash -s -- orrery.example.com`. Single addresses, or ranges up to /24 (IPv4) or /48 (IPv6); a later run with the hostname brings the rule up to date. No fixed address: use Cloudflare Access instead (step 7, option B).
-- Run again with the hostname, it repairs what it made and gives the tunnel a new secret, so a tunnel token from an old host or a copied `.env` stops working; Orrery is unreachable for about a minute. Run again without a hostname, it only updates Orrery. Its log is `/var/log/orrery-install.log`.
+- It installs the latest release, the one it was downloaded from. Another one: `curl ... | ORRERY_VERSION=v0.1.0 bash -s -- orrery.example.com`.
+- Run again with the hostname, it repairs what it made and gives the tunnel a new secret, so a tunnel token from an old host or a copied `.env` stops working; Orrery is unreachable for about a minute. Run again without a hostname, it only updates Orrery to the latest release. Its log is `/var/log/orrery-install.log`.
 - `CLOUDFLARE_API_TOKEN` replaces the prompt, at the price of the token landing in your shell history: prefer the prompt. The connector URL is shown only when the output is a terminal.
 
 Then continue with step 3 (cloud credentials), step 6 (your AI client and its tool permissions) and steps 8 to 10 (check, harden SSH, onboard your servers). The rest of this page is the same setup by hand.
@@ -33,8 +34,9 @@ Then continue with step 3 (cloud credentials), step 6 (your AI client and its to
 ```bash
 apt update && apt install -y git curl
 curl -fsSL https://get.docker.com | sh
-git clone https://github.com/sansheng777/Orrery ~/orrery
-cd ~/orrery/deploy
+git clone https://github.com/sansheng777/Orrery ~/orrery && cd ~/orrery
+git checkout "$(git tag -l 'v*' --sort=-v:refname | grep -v -- - | head -1)"   # the latest release
+cd deploy
 mkdir -p data && chown 1000:1000 data && chmod 700 data
 ```
 
@@ -174,7 +176,7 @@ Run these as root in `~/orrery/deploy`.
 
 | Task | Command |
 | --- | --- |
-| Update Orrery | `cd ~/orrery && git pull && cd deploy && docker compose up -d --build` (connector down for one to two minutes) |
+| Update Orrery | `curl -fsSL https://github.com/sansheng777/Orrery/releases/latest/download/install.sh \| bash`: the latest release, configuration kept, connector down for one to two minutes. What changed: [CHANGELOG.md](../CHANGELOG.md) |
 | Status | `docker compose ps` |
 | Agent or tunnel logs | `docker compose logs -f orrery`, `docker compose logs -f tunnel` |
 | Audit log | `tail -n 50 data/audit.log` |
@@ -188,7 +190,7 @@ Run these as root in `~/orrery/deploy`.
 Run this with `run_command` on the Orrery host:
 
 ```bash
-cd ~/orrery && git pull -q && cd deploy && (setsid nohup docker compose up -d --build > /tmp/orrery-update.log 2>&1 < /dev/null &)
+(setsid nohup bash -c 'curl -fsSL https://github.com/sansheng777/Orrery/releases/latest/download/install.sh | bash' > /tmp/orrery-update.log 2>&1 < /dev/null &)
 ```
 
-The call often returns Bad Gateway because the rebuild cuts the connection carrying the reply. Wait one to two minutes, call `list_servers`, then check `git -C ~/orrery log --oneline -1` and `/tmp/orrery-update.log`. The command is fully detached on purpose ([pitfalls](architecture.md#9-known-pitfalls)).
+The call often returns Bad Gateway because the rebuild cuts the connection carrying the reply. Wait one to two minutes, then call `fleet_overview`: its first line names the version that answers. `/tmp/orrery-update.log` shows what happened. The command is fully detached on purpose ([pitfalls](architecture.md#9-known-pitfalls)).

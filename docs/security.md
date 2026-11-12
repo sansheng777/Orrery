@@ -207,6 +207,20 @@ Note how to reach each server without SSH: the provider's web console, rescue sy
 
 The baseline does not cover the cloud accounts themselves (turn on two-factor authentication at every provider, Cloudflare, GitHub and your AI client), other exposed services, or OS updates (keep `unattended-upgrades` or similar on).
 
+## Verifying a release
+
+Every release is built by GitHub Actions from the tagged commit, and its files and image carry build provenance signed for this repository. With the GitHub CLI:
+
+```bash
+curl -fsSLO https://github.com/sansheng777/Orrery/releases/latest/download/install.sh
+gh attestation verify install.sh --repo sansheng777/Orrery
+gh attestation verify oci://ghcr.io/sansheng777/orrery:latest --repo sansheng777/Orrery
+```
+
+A file that passes was produced by the release workflow of this repository, unchanged. Without the CLI, compare it with `SHA256SUMS` from the same release: `sha256sum -c --ignore-missing SHA256SUMS`. That shows the download is complete, not who made it.
+
+The installer you pipe into `bash` installs the release it came from: the one in its URL, or the latest. `ORRERY_VERSION=v1.2.3` picks another.
+
 ## Rotating secrets
 
 ### Connector token

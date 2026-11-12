@@ -1,5 +1,6 @@
 {
   "name": "orrery",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Orrery: a self-hosted control plane for your servers across every cloud, built for AI agents (MCP). npm workspaces: the agent and one module per cloud provider.",
@@ -8,7 +9,7 @@
     "providers/*"
   ],
   "scripts": {
-    "test": "npm test -w agent && node deploy/test.mjs"
+    "test": "npm test -w agent && node deploy/test.mjs && node scripts/test.mjs"
   },
   "license": "MIT"
 }

@@ -8,6 +8,7 @@ Start with AGENTS.md: deploy commands, client setup, publishing the claude.ai da
 
 - [AGENTS.md](AGENTS.md): for AI agents deploying, using or changing Orrery
 - [README.md](README.md): overview, features, supported providers
+- [CHANGELOG.md](CHANGELOG.md): what changed in each release
 - [docs/deploy.md](docs/deploy.md): deployment from scratch, clients, daily operations
 - [docs/providers.md](docs/providers.md): credentials and permissions per provider
 - [docs/security.md](docs/security.md): security model, protected machines, key rotation

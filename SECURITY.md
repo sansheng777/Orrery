@@ -8,7 +8,7 @@ Include:
 
 - what an attacker can do, and what they need first (for example a connector token, a compromised monitored server, or a malicious API answer),
 - the affected component (agent, a provider module, the dashboard, the deployment files),
-- steps to reproduce, and the commit you tested.
+- steps to reproduce, and the release or commit you tested.
 
 Never include real credentials, tokens, private keys or IP addresses of machines you do not own. Use placeholders.
 
@@ -16,7 +16,9 @@ We will acknowledge the report, keep you informed while we fix it, and credit yo
 
 ## Scope
 
-Fixes go to the latest version on the default branch. We want to hear about:
+Security fixes ship in a new release and are listed under **Security** in [CHANGELOG.md](CHANGELOG.md). Only the latest release is supported: update with the installer (`curl -fsSL https://github.com/sansheng777/Orrery/releases/latest/download/install.sh | bash` on the Orrery host). How to check that a release is genuine: [docs/security.md](docs/security.md#verifying-a-release).
+
+We want to hear about:
 
 - a way around the token check, protected machines, name confirmation, the refusal of secret-returning APIs or the redaction of results,
 - a secret that reaches a tool result, a log or the audit log,

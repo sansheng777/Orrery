@@ -1,5 +1,6 @@
 {
   "name": "orrery-linode",
+  "version": "0.1.0",
   "private": true,
   "description": "Linode (Akamai Cloud) instances and control tools for Orrery (no dependencies)",
   "type": "module"

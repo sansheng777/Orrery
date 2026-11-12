@@ -1,5 +1,6 @@
 {
   "name": "orrery-gcp",
+  "version": "0.1.0",
   "private": true,
   "description": "Google Cloud Compute Engine instances and control tools for Orrery (no dependencies)",
   "type": "module"

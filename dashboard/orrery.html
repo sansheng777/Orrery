@@ -1139,7 +1139,7 @@ td.r, th.r { text-align: right; white-space: nowrap; }
       const e = c.error;
       const old = /not found|unknown tool/i.test(errText(e));
       const local = e.code === "not_in_manifest" && SERVER.startsWith("host:");
-      const msg = old ? "This agent has no cloud features yet. Update it (git pull, then docker compose up -d --build in deploy/) and click Retry."
+      const msg = old ? "This agent has no cloud features yet. Update it (run the installer again on its host without a hostname: docs/deploy.md) and click Retry."
         : local ? "This page isn't allowed to read cloud providers through the local agent. Use the hosted Orrery connector instead, or republish this page from Claude Code on this computer with the cloud tools added for host:orrery."
         : e.code === "approval_required" || e.code === "not_in_manifest" || e.code === "cancelled" ? "Orrery needs your approval to read the cloud providers."
         : e.code === "server_unavailable" ? "The agent isn't responding right now." : errText(e);

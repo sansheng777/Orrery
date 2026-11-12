@@ -1,5 +1,6 @@
 {
   "name": "orrery-aws",
+  "version": "0.1.0",
   "private": true,
   "description": "AWS views and controls for Orrery (official AWS SDK for JavaScript v3)",
   "type": "module",

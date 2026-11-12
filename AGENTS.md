@@ -55,7 +55,7 @@ Three rules for the whole setup:
 
 > 1. Log in to the VPS (for example `ssh root@VPS_IP`, or the provider's web console). If you are not root, run `sudo -i` first.
 > 2. Paste this one line and press Enter:
->    `curl -fsSL https://raw.githubusercontent.com/sansheng777/Orrery/main/deploy/install.sh | bash -s -- HOSTNAME`
+>    `curl -fsSL https://github.com/sansheng777/Orrery/releases/latest/download/install.sh | bash -s -- HOSTNAME`
 > 3. When it says `Paste the token (input hidden):`, paste the Cloudflare token and press Enter. Nothing appears while you paste. That is normal.
 > 4. Wait about five minutes, until it prints `Orrery is running at https://HOSTNAME`. Then tell me it is done. If it stops with an error, send me only the error line.
 > 5. At the end it prints a URL that contains a secret. Do not send me that URL or the text around it.
@@ -63,7 +63,7 @@ Three rules for the whole setup:
 
 For a tool on their own computer, the line in point 2 is this one instead (the variable goes after the `|`):
 
-`curl -fsSL https://raw.githubusercontent.com/sansheng777/Orrery/main/deploy/install.sh | ORRERY_ALLOW_IPS="THEIR_IP" bash -s -- HOSTNAME`
+`curl -fsSL https://github.com/sansheng777/Orrery/releases/latest/download/install.sh | ORRERY_ALLOW_IPS="THEIR_IP" bash -s -- HOSTNAME`
 
 **Step 5. The user adds Orrery to their AI client.** The URL the installer printed looks like `https://HOSTNAME/mcp/LONG_SECRET`. For claude.ai, send this:
 
@@ -116,12 +116,16 @@ About the installer: it installs Docker, adds 2 GB of swap if there is none, cre
 | Codex, Cursor, Gemini CLI, other MCP clients | Remote Streamable HTTP server at `https://<host>/mcp` with header `Authorization: Bearer <token>` |
 | Local, no server | A stdio server on the user's computer: read-only cloud views plus SSH tools, credentials in `~/.orrery/`. Setup: `docs/architecture.md`, "Running locally" |
 
+### Update Orrery
+
+The user runs this on the host, as root: `curl -fsSL https://github.com/sansheng777/Orrery/releases/latest/download/install.sh | bash`. It installs the latest release and keeps the configuration; Orrery is down for one to two minutes. What changed: `CHANGELOG.md`. From a chat, through `run_command`: `docs/deploy.md`, "Updating from a chat".
+
 ### Publish the dashboard (claude.ai only)
 
 `dashboard/orrery.html` is a ready-made claude.ai Artifact. It works only in claude.ai and the Claude apps; in every other client the dashboard is the table `fleet_overview` returns.
 
 1. Check the name of the user's connector. The page looks for `Orrery`; for another name, change the `CANDIDATES` array near the top of the page's script. Make no other edit.
-2. Publish the file itself with the Artifact tool: from a checkout, or downloaded from `https://raw.githubusercontent.com/sansheng777/Orrery/main/dashboard/orrery.html`. Never retype or shorten it.
+2. Publish the file itself with the Artifact tool: from a checkout, or downloaded from the URL in the connector's instructions, which is the dashboard of the running release (the latest release's: `https://github.com/sansheng777/Orrery/releases/latest/download/orrery.html`). Never retype or shorten it.
 3. Declare the MCP capability for that connector, `{"mcp": {"servers": [{"server": "Orrery", "tools": [...]}]}}` (the Artifact tool's own documentation wins if its format differs), with these tools:
 
 `list_servers, server_stats, server_pulse, cloud_providers, run_command, container_logs, container_action, add_server, update_server, remove_server, aws_instances, aws_cost, netcup_servers, linode_instances, gcp_instances, vultr_instances, digitalocean_droplets, kamatera_servers, aliyun_instances`
@@ -156,12 +160,15 @@ The server sends these rules to every client as MCP instructions (`agent/src/ins
 | `providers/<name>/index.js` | One provider each: `loadConfig`, `register(server, ctx)`, listings, guards, tests in `test/` |
 | `providers/shared.js` | Shared by the providers: `protectedIps`, `jsonRequest` (timeout, one retry for GETs) |
 | `dashboard/orrery.html` | The claude.ai Artifact |
+| `scripts/` | `release-notes.mjs`: the checks and notes of a release (tests in `test.mjs`) |
+| `CHANGELOG.md` | What changed in each release |
 | `deploy/` | `install.sh` (one-command setup), `cloudflare.mjs` (tunnel, DNS record and WAF rule through the API; tests in `test.mjs`), `docker-compose.yml` (`orrery`, `tunnel`), `enable-ssh.sh` |
 
 Rules:
 
 - Run `npm test` at the repository root before every commit. Tests use fake data only.
 - Commit subjects: imperative, at most 50 characters, no trailing period. Details go in the body.
+- Every change a user or an assistant would notice gets a line under `## [Unreleased]` in `CHANGELOG.md` (Added, Changed, Fixed, Removed, Security). A release is cut as in `docs/architecture.md`, "Releases"; never move or delete a published tag.
 - Public repository: English only; no real IPs, hostnames, domains, ids, account names or emails. Use 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32 and example.com.
 - Every new tool follows the existing guards: `readOnlyHint` for reads, `destructiveHint` for anything that stops, deletes or runs commands; protected machines refused; destructive actions repeat the machine's name; secret-returning operations refused; secrets redacted; changes audited; a read-only `*_query` twin for each generic API tool. Add tests for the refusals.
 - New environment variables use the `ORRERY_` prefix, go into `deploy/docker-compose.yml` (containers only see listed variables) and the configuration table in `docs/architecture.md`.

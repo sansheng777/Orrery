@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
 # One-command setup of the Orrery host. As root on a fresh Debian or Ubuntu VPS, in your own terminal:
 #
-#   curl -fsSL https://raw.githubusercontent.com/sansheng777/Orrery/main/deploy/install.sh | bash -s -- orrery.example.com
+#   curl -fsSL https://github.com/sansheng777/Orrery/releases/latest/download/install.sh | bash -s -- orrery.example.com
 #
 # It asks once for a Cloudflare API token (typed hidden, used for this run only, stored nowhere), then
 # installs Docker, adds swap if there is none, creates the tunnel, DNS record and WAF rule for the
-# hostname, starts Orrery and lets it monitor this machine. Nothing existing in Cloudflare is changed.
-# Without a hostname it updates an Orrery that is already set up.
+# hostname, starts Orrery and lets it monitor this machine. In Cloudflare it touches only what is its own.
+# Without a hostname it updates an Orrery that is already set up. Either way it installs the release it
+# was downloaded from.
 #
 # The token (dash.cloudflare.com > My Profile > API Tokens > Create Custom Token) needs:
 #   Account > Cloudflare Tunnel > Edit, and for the domain: Zone > Zone > Read, DNS > Edit, Zone WAF > Edit.
 #
 # Environment, set after the pipe (curl ... | NAME=value bash -s -- host): CLOUDFLARE_API_TOKEN (instead of
 # the prompt), ORRERY_ALLOW_IPS="203.0.113.30 ..." (more addresses that may reach the hostname, for
-# clients on your own computer; applies when the rule is created), ORRERY_HOME (default ~/orrery).
+# clients on your own computer), ORRERY_VERSION (another release such as v0.1.0, or main), ORRERY_HOME
+# (default ~/orrery).
 set -euo pipefail
 
 REPO=https://github.com/sansheng777/Orrery
+# The release this installer installs. The release workflow writes its tag here; in the repository it
+# stays empty, which means the main branch.
+RELEASE=""
 LOG=/var/log/orrery-install.log
 
 say() { printf '\n== %s\n' "$*"; }
@@ -24,13 +29,23 @@ die() { printf '\n%s\n' "$*" >&2; exit 1; }
 # Runs a noisy step with its output in the log; on failure shows the end of the log.
 run() { "$@" >>"$LOG" 2>&1 || { tail -n 20 "$LOG" >&2; die "Failed: $* (full log: $LOG)"; }; }
 
+# Puts a checkout on a release tag, or on the tip of main.
+checkout() {
+  if [ "$2" = main ]; then
+    git -C "$1" checkout --quiet main && git -C "$1" merge --quiet --ff-only origin/main
+  else
+    git -C "$1" -c advice.detachedHead=false checkout --quiet "refs/tags/$2"
+  fi
+}
+
 # This file's path when it is run from a checkout; empty when it is piped into bash.
 SELF=${BASH_SOURCE[0]:-}
 
 # Everything runs from main, so a download cut short runs nothing.
 main() {
-  local hostname=${1:-} dir=${ORRERY_HOME:-$HOME/orrery} from_checkout="" token=""
+  local hostname=${1:-} dir=${ORRERY_HOME:-$HOME/orrery} from_checkout="" token="" ref=${ORRERY_VERSION:-${RELEASE:-main}}
   [ "$(id -u)" = 0 ] || die "Run this as root."
+  [[ "$ref" == main || "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || die "ORRERY_VERSION must be a release such as v0.1.0, or main."
   command -v apt-get >/dev/null || die "This installer is for Debian and Ubuntu. Elsewhere, follow docs/deploy.md."
   if [ -n "$SELF" ] && [ -f "$(dirname "$SELF")/cloudflare.mjs" ]; then
     dir=$(cd "$(dirname "$SELF")/.." && pwd)
@@ -87,14 +102,22 @@ EOF
     fi
   fi
 
-  say "Getting Orrery into $dir"
   if [ -n "$from_checkout" ]; then
-    echo "   Using this checkout"
-  elif [ ! -d "$dir/.git" ]; then
-    run git clone "$REPO" "$dir"
+    say "Using the Orrery checkout in $dir"
   else
-    git -C "$dir" pull --ff-only >>"$LOG" 2>&1 || echo "   Could not update it (local changes?). Using it as it is."
+    say "Getting Orrery ${ref} into $dir"
+    [ -d "$dir/.git" ] || run git clone --quiet "$REPO" "$dir"
+    run git -C "$dir" fetch --quiet --tags --force origin
+    if [ "$ref" != main ] && ! git -C "$dir" rev-parse -q --verify "refs/tags/$ref" >/dev/null; then
+      die "There is no release $ref. The releases: $REPO/releases"
+    fi
+    if ! checkout "$dir" "$ref" >>"$LOG" 2>&1; then
+      echo "   Could not switch to $ref (local changes in $dir?). Using the checkout as it is."
+    fi
   fi
+  local version
+  version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$dir/package.json" | head -1)
+  [ "$ref" != main ] || [ -n "$from_checkout" ] || version="$version (main branch)"
   cd "$dir/deploy"
   chmod 700 . # .env and data/ live here
   mkdir -p data && chown 1000:1000 data && chmod 700 data
@@ -123,7 +146,7 @@ EOF
   if [ -n "$up" ]; then echo "   Connected"; else echo "   Not connected yet. Check: cd $dir/deploy && docker compose logs --tail 30 tunnel"; fi
 
   if [ -z "$hostname" ]; then
-    printf '\nOrrery is updated and running.\n'
+    printf '\nOrrery %s is running. What changed: %s/blob/main/CHANGELOG.md\n' "$version" "$REPO"
     return
   fi
   # The connector URL is shown only on a terminal, so it reaches no log and no pipe. A tool that runs
@@ -133,7 +156,7 @@ EOF
   if [ -t 1 ] && [ -s data/token ]; then secret=$(cat data/token); fi
   cat <<EOF
 
-Orrery is running at https://$hostname.
+Orrery $version is running at https://$hostname.
 
 1. Add it to your AI client. Keep this URL secret: it unlocks every tool.
      claude.ai > Settings > Connectors > Add custom connector

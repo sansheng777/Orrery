@@ -67,12 +67,12 @@ export function overviewRow(server, stats, error) {
   };
 }
 
-export function overviewText(rows, { now = new Date(), more = 0, errors = [] } = {}) {
+export function overviewText(rows, { now = new Date(), more = 0, errors = [], version = "" } = {}) {
   const count = (state) => rows.filter((r) => r.state === state).length;
   const flagged = rows.filter((r) => r.attention.length).length;
   const parts = [`${count("up")} up`, count("unreachable") && `${count("unreachable")} unreachable`, count("stopped") && `${count("stopped")} stopped`].filter(Boolean);
   const lines = [
-    `Orrery overview, ${now.toISOString().slice(0, 16).replace("T", " ")} UTC. ${rows.length} ${rows.length === 1 ? "server" : "servers"}: ${parts.join(", ")}. ${flagged ? `${flagged} ${flagged === 1 ? "needs" : "need"} attention.` : "Nothing needs attention."}`,
+    `Orrery${version ? ` ${version}` : ""} overview, ${now.toISOString().slice(0, 16).replace("T", " ")} UTC. ${rows.length} ${rows.length === 1 ? "server" : "servers"}: ${parts.join(", ")}. ${flagged ? `${flagged} ${flagged === 1 ? "needs" : "need"} attention.` : "Nothing needs attention."}`,
     "",
     "| Server | State | CPU | Memory | Disk / | Load | Containers | Uptime | Attention |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -86,7 +86,7 @@ export function overviewText(rows, { now = new Date(), more = 0, errors = [] } =
 }
 
 // servers: what list_servers returns. probe(server) resolves to its server_stats or rejects.
-export async function buildOverview({ servers, errors = [], probe, timeoutMs = TIMEOUT_MS, now }) {
+export async function buildOverview({ servers, errors = [], probe, timeoutMs = TIMEOUT_MS, now, version }) {
   const shown = servers.slice(0, MAX_SERVERS);
   const rows = await Promise.all(
     shown.map(async (s) => {
@@ -102,5 +102,5 @@ export async function buildOverview({ servers, errors = [], probe, timeoutMs = T
       }
     }),
   );
-  return overviewText(rows, { now, more: servers.length - shown.length, errors });
+  return overviewText(rows, { now, more: servers.length - shown.length, errors, version });
 }
