@@ -55,7 +55,7 @@ Create a Cloudflare API token for this run:
     Zone      Zone                Read
     Zone      DNS                 Edit
     Zone      Zone WAF            Edit
-  Under Zone Resources, pick the domain of $hostname.
+  Under Zone Resources, pick the domain of $hostname. Under TTL, let it end tomorrow.
 EOF
       read -rsp "Paste the token (input hidden): " token </dev/tty
       echo
