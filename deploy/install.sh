@@ -116,7 +116,8 @@ EOF
   say "Waiting for the tunnel"
   local up=""
   for _ in $(seq 30); do
-    if docker compose logs tunnel 2>/dev/null | grep -q "Registered tunnel connection"; then up=1; break; fi
+    # grep reads to the end: with pipefail, "grep -q" on a long log would end the pipe early and read as "no".
+    if docker compose logs tunnel 2>/dev/null | grep "Registered tunnel connection" >/dev/null; then up=1; break; fi
     sleep 2
   done
   if [ -n "$up" ]; then echo "   Connected"; else echo "   Not connected yet. Check: cd $dir/deploy && docker compose logs --tail 30 tunnel"; fi

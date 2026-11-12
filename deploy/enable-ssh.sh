@@ -73,7 +73,8 @@ fi
 if sshd -T 2>/dev/null | grep -Ei '^permitrootlogin (no|forced-commands-only)' >/dev/null; then
   echo "Note: sshd has PermitRootLogin no or forced-commands-only, so the connector cannot run commands on this machine as root. Set PermitRootLogin prohibit-password and restart sshd." >&2
 fi
-if sshd -T 2>/dev/null | grep -Eiq '^passwordauthentication yes'; then
+# (grep reads to the end: with pipefail, "grep -q" would end the pipe early and make this test false.)
+if sshd -T 2>/dev/null | grep -Ei '^passwordauthentication yes' >/dev/null; then
   echo >&2
   echo "WARNING: this machine still accepts SSH logins with a password. It is about to hold the keys to" >&2
   echo "all your servers: make it key-only before you add cloud credentials (docs/deploy.md, step 9)." >&2
